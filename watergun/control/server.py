@@ -1,1 +1,0 @@
-send_command_2_sevro(0)

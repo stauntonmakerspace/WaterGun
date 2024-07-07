@@ -2,5 +2,6 @@ https://github.com/EdjeElectronics/TensorFlow-Lite-Object-Detection-on-Android-a
 
 https://www.pyimagesearch.com/2019/04/08/openvino-opencv-and-movidius-ncs-on-the-raspberry-pi/#pyi-pyimagesearch-plus-optin-modal
 
-
 https://www.thingiverse.com/thing:898517
+
+Target Zone in meters

@@ -1,2 +1,0 @@
-Z_OFFSET
-Y_OFFSET
