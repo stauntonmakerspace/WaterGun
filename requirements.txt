@@ -1,0 +1,4 @@
+boxmot
+opencv-python
+numpy
+ultralytics
