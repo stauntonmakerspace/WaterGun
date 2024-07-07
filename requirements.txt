@@ -2,3 +2,4 @@ boxmot
 opencv-python
 numpy
 ultralytics
+python-dotenv

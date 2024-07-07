@@ -1,4 +1,4 @@
-send_command()
+#send_command()
 
 import socket
 import threading

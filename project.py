@@ -119,3 +119,36 @@ if __name__ == "__main__":
     load_crosshair(os.getenv('CROSSHAIR_FILE'))
     load_floor_corners(os.getenv('FLOOR_CORNERS_FILE'))
     process_stream()
+    
+    
+# get_box_area = lambda box: box[0]
+# get_box_center = lambda box: (int(box[0] + ((box[2] - box[0])//2)), int(box[1] + ((box[3] - box[1]) //2)))
+# distance = lambda p1, p2: ((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)**.5
+
+# try:
+#     camera = VideoStream(usePiCamera=True)
+#     camera.start()
+#     camera_matrix = np.load("camera_matrix.npy")
+#     dist_coefficients = np.load("dist_coefficients.npy")
+# except Exception as e:
+#     raise(e)
+
+# water_gun = WaterGun()
+# water_gun.start()
+# water_gun.center()
+
+# tracker = NCS2_Wrapper(filter_for = set(["person", "dog"]))
+# #tracker = TFLite_Wrapper("Sample_TFLite_model")
+
+# lock_start = time.time()
+# last_detection = time.time()
+
+# scan_mode_started = False
+# scan_pass_start = time.time()
+# scan_time = 2
+# scan_value = 100
+# while True:
+#     frame = camera.read()
+#     frame = cv2.flip(frame, 0)
+#     #frame = cv2.undistort(frame, camera_matrix, dist_coefficients, None, camera_matrix)
+    
