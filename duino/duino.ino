@@ -7,10 +7,10 @@
 #define H_BRIDGE_PIN_2 8
 
 // Servo configuration
-#define PAN_GEAR_RATIO 5.0
-#define TILT_GEAR_RATIO 3.0
+#define PAN_GEAR_RATIO 1.0
+#define TILT_GEAR_RATIO 1.0
 #define PAN_ZERO_OFFSET 0  // Adjust this value to set the zero position for pan
-#define TILT_ZERO_OFFSET 0 // Adjust this value to set the zero position for tilt
+#define TILT_ZERO_OFFSET 0.0 // Adjust this value to set the zero position for tilt
 
 // Serial configuration
 #define BAUD_RATE 115200

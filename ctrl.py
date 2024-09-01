@@ -24,7 +24,7 @@ def main(enable_logging):
     joystick = pygame.joystick.Joystick(0)
     joystick.init()
 
-    ser = serial.Serial('/dev/tty.usbmodem11301', 115200, timeout=1)
+    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
     time.sleep(2)  # Wait for the connection to establish
 
     logger = None
@@ -41,8 +41,8 @@ def main(enable_logging):
             if current_time - last_update_time >= update_interval:
                 pygame.event.pump()
                 
-                x = joystick.get_axis(0)
-                y = joystick.get_axis(1)
+                x = -joystick.get_axis(0)
+                y = -joystick.get_axis(1)
                 trigger = int(joystick.get_button(5))  # Convert to int (0 or 1)
                 red_button = int(joystick.get_button(1))  # Convert to int (0 or 1)
                 
