@@ -43,7 +43,7 @@ def calibrate_camera():
     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
 
     # Save calibration data
-    np.save('calibration_data.npy', {'camera_matrix': mtx, 'dist_coeffs': dist})
+    np.save('dist_calibration_data.npy', {'camera_matrix': mtx, 'dist_coeffs': dist})
     print("Camera calibration saved to 'calibration_data.npy'")
 
     return mtx, dist

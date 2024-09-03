@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.optimize import minimize
-
+import json 
 from watergun.common import calculate_pan_tilt
 'http://192.168.1.161:8000/stream.mjpg'
 
@@ -31,39 +31,32 @@ def calibrate_system(calibration_points, measured_angles, initial_guess):
     result = minimize(error_function, initial_guess, args=(calibration_points, measured_angles),
                       method='Nelder-Mead')
     return result.x
-
-# Example usage
 if __name__ == "__main__":
     calibration_points = [
-        (1, 1, 0),    # 1 meter right, 1 meter forward
-        (0, 2, 0),    # 2 meters directly forward
-        (-1, 1, 0),   # 1 meter left, 1 meter forward
-        (3, 0, 0),    # 3 meters directly right
+        (1, 1, 0),
+        (0, 2, 0),
+        (-1, 1, 0),
+        (3, 0, 0),
     ]
-
-    # These would be the manually measured angles for each calibration point
     measured_angles = [
-        (45, -30),    # Example pan and tilt angles for point (1, 1, 0)
-        (0, -35),     # Example pan and tilt angles for point (0, 2, 0)
-        (-45, -30),   # Example pan and tilt angles for point (-1, 1, 0)
-        (90, -25),    # Example pan and tilt angles for point (3, 0, 0)
+        (45, -30),
+        (0, -35),
+        (-45, -30),
+        (90, -25),
     ]
-
-    # Initial guess for [height, initial_pan, initial_tilt, initial_roll]
     initial_guess = [1.5, 0, 0, 0]
 
-    # Perform calibration
     calibrated_params = calibrate_system(calibration_points, measured_angles, initial_guess)
-
-    print("Calibrated parameters:")
-    print(f"Height: {calibrated_params[0]:.2f} meters")
-    print(f"Initial Pan: {calibrated_params[1]:.2f} degrees")
-    print(f"Initial Tilt: {calibrated_params[2]:.2f} degrees")
-    print(f"Initial Roll: {calibrated_params[3]:.2f} degrees")
-
-    # Test the calibrated system
-    test_point = (2, 2, 0)
-    pan, tilt = calculate_pan_tilt(*test_point, calibrated_params)
-    print(f"\nFor test point {test_point}:")
-    print(f"Calculated Pan: {pan:.2f} degrees")
-    print(f"Calculated Tilt: {tilt:.2f} degrees")
+    
+    # Save calibration results
+    calibration_results = {
+        "height": calibrated_params[0],
+        "initial_pan": calibrated_params[1],
+        "initial_tilt": calibrated_params[2],
+        "initial_roll": calibrated_params[3]
+    }
+    
+    with open("calibration_results.json", "w") as f:
+        json.dump(calibration_results, f)
+    
+    print("Calibration results saved to calibration_results.json")

@@ -1,14 +1,76 @@
+import pygame
+import time
+import logging
+import sys
+import argparse
 import socket
 
-HOST = '127.0.0.1'  # The server's hostname or IP address
-PORT = 65432        # The port used by the server
+def setup_logger():
+    logger = logging.getLogger('joystick_logger')
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s,%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.connect((HOST, PORT))
-    while True:
-        message = input("Enter message (or 'quit' to exit): ")
-        if message.lower() == 'quit':
-            break
-        s.sendall(message.encode('utf-8'))
-        data = s.recv(1024)
-        print(f"Received: {data.decode('utf-8')}")
+def main(enable_logging):
+    pygame.init()
+    pygame.joystick.init()
+
+    if pygame.joystick.get_count() == 0:
+        print("No joystick detected. Please connect a Sony controller.", file=sys.stderr)
+        sys.exit(1)
+
+    joystick = pygame.joystick.Joystick(0)
+    joystick.init()
+
+    # Set up socket connection
+    HOST = '127.0.0.1'  # The server's hostname or IP address
+    PORT = 1632        # The port used by the server
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((HOST, PORT))
+
+    logger = None
+    if enable_logging:
+        logger = setup_logger()
+
+    print("pan_angle,tilt_angle,trigger,red_button", file=sys.stderr)
+
+    update_interval = 1.0 / 30  # 30 updates per second
+    last_update_time = time.time()
+
+    try:
+        while True:
+            current_time = time.time()
+            if current_time - last_update_time >= update_interval:
+                pygame.event.pump()
+                x = -joystick.get_axis(0)
+                y = -joystick.get_axis(1)
+                trigger = int(joystick.get_button(5))  # Convert to int (0 or 1)
+                red_button = int(joystick.get_button(1))  # Convert to int (0 or 1)
+
+                # Convert joystick values to angles (0-180)
+                pan_angle = int((x + 1) * 90)  # Map -1 to 1 to 0 to 180
+                tilt_angle = int((-y + 1) * 90)  # Map -1 to 1 to 0 to 180, and invert y
+
+                data = f"{pan_angle},{tilt_angle},{trigger},{red_button}\n"
+                sock.sendall(data.encode())
+
+                if logger:
+                    logger.info(f"{pan_angle},{tilt_angle},{trigger},{red_button}")
+
+                last_update_time = current_time
+
+    except KeyboardInterrupt:
+        print("Exiting...", file=sys.stderr)
+    finally:
+        sock.close()
+        pygame.quit()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Joystick reader with 30 updates per second")
+    parser.add_argument("--log", action="store_true", help="Enable logging to stdout")
+    args = parser.parse_args()
+
+    main(args.log)
