@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 def select_floor_corners():
-    cap = cv2.VideoCapture('http://192.168.1.161:8000/stream.mjpg')
+    cap = cv2.VideoCapture(0)
     floor_corners = []
     corner_names = ["top-left", "top-right", "bottom-right", "bottom-left"]
 

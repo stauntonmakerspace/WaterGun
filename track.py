@@ -1,224 +1,356 @@
+from pathlib import Path
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
 import cv2
 import numpy as np
-from pathlib import Path
+import socket
+import time
 from boxmot import DeepOCSORT
 from ultralytics import YOLO
 import json
 from watergun.common import calculate_pan_tilt
 import os
-from dotenv import load_dotenv
-
-def load_crosshair(crosshair_file, pixels_per_meter, crosshair_scale):
-    crosshair = cv2.imread(crosshair_file, cv2.IMREAD_UNCHANGED)
-    if crosshair is None:
-        print(f"Failed to load crosshair image: {crosshair_file}")
-        return None
-    
-    max_size = 100
-    h, w = crosshair.shape[:2]
-    if max(h, w) > max_size:
-        scale = max_size / max(h, w)
-        crosshair = cv2.resize(crosshair, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        print(f"Resized crosshair to fit within {max_size}x{max_size}")
-    
-    crosshair_size_meters = (crosshair.shape[1] / pixels_per_meter * crosshair_scale, 
-                            crosshair.shape[0] / pixels_per_meter * crosshair_scale)
-    print(f"Crosshair size: {crosshair_size_meters[0]:.2f}m x {crosshair_size_meters[1]:.2f}m")
-    return crosshair
-
-def load_floor_corners(floor_corners_file, frame_width, frame_height):
-    try:
-        floor_corners = np.load(floor_corners_file)
-        
-        # Calculate perspective transform matrix
-        src_pts = np.array([[0, 0], [frame_width-1, 0], [frame_width-1, frame_height-1], [0, frame_height-1]], dtype=np.float32)
-        dst_pts = floor_corners.astype(np.float32)
-        perspective_transform = cv2.getPerspectiveTransform(src_pts, dst_pts)
-        
-        print("Floor corners loaded and perspective transform matrix calculated.")
-        return floor_corners, perspective_transform
-    except Exception as e:
-        print(f"Failed to load floor corners: {e}")
-        return None, None
-
-def create_crosshair_variants(crosshair_img):
-    if crosshair_img.shape[2] == 4:
-        selected_crosshair = crosshair_img.copy()
-    else:
-        selected_crosshair = cv2.cvtColor(crosshair_img, cv2.COLOR_BGR2BGRA)
-
-    non_selected_crosshair = selected_crosshair.copy()
-    non_selected_crosshair[:, :, [0, 2]] = non_selected_crosshair[:, :, [2, 0]]
-
-    return selected_crosshair, non_selected_crosshair
-
-def pixel_to_meter(pixel_x, pixel_y, perspective_transform):
+import logging
+import sys
+import pygame
+def pixel_to_meter( pixel_x, pixel_y, perspective_transform):
     px_homogeneous = np.array([[pixel_x, pixel_y, 1]], dtype=np.float32).T
     meter_homogeneous = perspective_transform @ px_homogeneous
     meter_x, meter_y, _ = meter_homogeneous.ravel() / meter_homogeneous[2]
     return meter_x, meter_y
+def setup_logger():
+        logger = logging.getLogger('video_tracking_logger')
+        logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler(sys.stdout)
+        formatter = logging.Formatter('%(asctime)s,%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        return logger
+    
+def load_floor_corners(file_path, frame_width, frame_height):
+    try:
+        floor_corners = np.load(file_path)
+        src_pts = np.array([[0, 0], [frame_width-1, 0], [frame_width-1, frame_height-1], [0, frame_height-1]], dtype=np.float32)
+        dst_pts = floor_corners.astype(np.float32)
+        perspective_transform = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        inverse_perspective_transform = cv2.getPerspectiveTransform(dst_pts, src_pts)
+        print("Floor corners loaded and perspective transform matrices calculated.")
+        return floor_corners, perspective_transform, inverse_perspective_transform
+    except Exception as e:
+        print(f"Failed to load floor corners: {e}")
+        return None, None, None
+    
+class VideoTrackingApp:
+    def __init__(self, window, video_source=0):
+        self.window = window
+        self.window.title("Video Tracking App")
 
-def main():
-    # Load environment variables
-    load_dotenv()
+        self.vid = cv2.VideoCapture(video_source)
+        self.frame_width = int(self.vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = int(self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Load calibration results
-    with open("calibration_results.json", "r") as f:
-        calibration_results = json.load(f)
+        self.yolo_model = YOLO('models/yolov8n.pt')
+        self.tracker = DeepOCSORT(
+            model_weights=Path('models/osnet_x0_25_msmt17.pt'),
+            device='cuda:0',
+            fp16=False,
+        )
 
-    # Initialize the tracker
-    tracker = DeepOCSORT(
-        model_weights=Path('models/osnet_x0_25_msmt17.pt'),
-        device='cuda:0',
-        fp16=False,
-    )
+        self.crosshair_img = self.load_image(os.getenv('CROSSHAIR_FILE'))
+        self.floor_corners, self.perspective_transform, self.inverse_perspective_transform = load_floor_corners(
+            os.getenv('FLOOR_CORNERS_FILE'), self.frame_width, self.frame_height)
+        with open("calibration_results.json", "r") as f:
+            self.calibration_results = json.load(f)
 
-    # Initialize YOLOv8 model
-    yolo_model = YOLO('models/yolov8n.pt')
+        self.selected_crosshair, self.non_selected_crosshair = self.create_crosshair_variants(self.crosshair_img)
 
-    # Open video stream
-    vid = cv2.VideoCapture(0)#os.getenv('MJPG_STREAM_URL'))
+        self.current_target_index = 0
+        self.tracks = []
+        self.debug_mode = tk.BooleanVar(value=False)
+        self.targeting_mode = tk.StringVar(value="automatic")
+        self.firing_mode = tk.StringVar(value="toggle")
+        self.target_hold_time = tk.DoubleVar(value=5.0)
+        self.cursor_target = [self.frame_width // 2, self.frame_height // 2]
+        self.last_target_switch_time = 0
 
-    # Get video properties
-    frame_width = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.sprayer_address = tk.StringVar(value="127.0.0.1")
+        self.sprayer_port = tk.IntVar(value=1632)
+        self.connection_status = tk.StringVar(value="Disconnected")
+        self.socket = None
+        self.is_firing = False
+        self.logger = setup_logger()
 
-    # Initialize variables
-    current_target_index = 0
-    image_offset = [0, 0]  # [x, y] offset in meters
-    pixels_per_meter = int(os.getenv('PIXELS_PER_METER', 100))
-    crosshair_scale = float(os.getenv('CROSSHAIR_SCALE', 1.0))
+        self.update_interval = 1.0 / 30  # 30 updates per second
+        self.last_update_time = time.time()
 
-    # Load crosshair and floor corners
-    crosshair_img = load_crosshair(os.getenv('CROSSHAIR_FILE'), pixels_per_meter, crosshair_scale)
-    floor_corners, perspective_transform = load_floor_corners(os.getenv('FLOOR_CORNERS_FILE'), frame_width, frame_height)
+        # Joystick setup
+        pygame.init()
+        pygame.joystick.init()
+        self.joystick = None
+        if pygame.joystick.get_count() > 0:
+            self.joystick = pygame.joystick.Joystick(0)
+            self.joystick.init()
 
-    # Create crosshair variants
-    selected_crosshair, non_selected_crosshair = create_crosshair_variants(crosshair_img)
+        self.create_ui()
 
-    # Pre-calculate the crosshair transform matrix
-    src_pts = np.array([[0, 0], [frame_width-1, 0], [frame_width-1, frame_height-1], [0, frame_height-1]], dtype=np.float32)
-    src_center = np.mean(src_pts, axis=0)
-    dst_center = np.mean(floor_corners, axis=0)
-    translation = dst_center - src_center
-    src_pts += translation
-    crosshair_transform = cv2.getPerspectiveTransform(src_pts, floor_corners.astype(np.float32))
 
-    while True:
-        ret, im = vid.read()
-        if not ret:
-            break
+    def create_ui(self):
+        video_frame = ttk.Frame(self.window)
+        video_frame.grid(row=0, column=0, padx=10, pady=10)
 
-        # Run YOLOv8 detection
-        results = yolo_model(im,verbose=False)
+        control_frame = ttk.Frame(self.window)
+        control_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
 
-        # Extract detections in the format required by DeepOCSORT
+        self.canvas = tk.Canvas(video_frame, width=self.frame_width, height=self.frame_height)
+        self.canvas.pack()
+        self.canvas.bind("<Motion>", self.on_mouse_move)
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+
+        ttk.Checkbutton(control_frame, text="Debug Mode", variable=self.debug_mode).pack(anchor="w", pady=5)
+
+        ttk.Label(control_frame, text="Targeting Mode:").pack(anchor="w", pady=5)
+        ttk.Radiobutton(control_frame, text="Auto", variable=self.targeting_mode, value="automatic").pack(anchor="w")
+        ttk.Radiobutton(control_frame, text="Cursor", variable=self.targeting_mode, value="cursor").pack(anchor="w")
+        ttk.Radiobutton(control_frame, text="Joystick", variable=self.targeting_mode, value="joystick").pack(anchor="w")
+
+        ttk.Label(control_frame, text="(Cursor)Firing Mode:").pack(anchor="w", pady=5)
+        ttk.Radiobutton(control_frame, text="Toggle", variable=self.firing_mode, value="toggle").pack(anchor="w")
+        ttk.Radiobutton(control_frame, text="Hold to Fire", variable=self.firing_mode, value="hold").pack(anchor="w")
+
+        ttk.Label(control_frame, text="(Auto) Target Hold Time (s):").pack(anchor="w", pady=5)
+        ttk.Scale(control_frame, from_=1, to=10, variable=self.target_hold_time, orient="horizontal").pack(anchor="w")
+
+        ttk.Label(control_frame, text="Sprayer Address:").pack(anchor="w", pady=5)
+        ttk.Entry(control_frame, textvariable=self.sprayer_address).pack(anchor="w")
+
+        ttk.Label(control_frame, text="Sprayer Port:").pack(anchor="w", pady=5)
+        ttk.Entry(control_frame, textvariable=self.sprayer_port).pack(anchor="w")
+
+        ttk.Label(control_frame, text="Connection Status:").pack(anchor="w", pady=5)
+        ttk.Label(control_frame, textvariable=self.connection_status).pack(anchor="w")
+
+        ttk.Button(control_frame, text="Refresh Connection", command=self.refresh_connection).pack(anchor="w", pady=5)
+
+        self.window.after(10, self.update)
+
+    def on_mouse_move(self, event):
+        if self.targeting_mode.get() == "cursor":
+            self.cursor_target = [event.x, event.y]
+
+    def on_canvas_click(self, event):
+        if self.targeting_mode.get() == "cursor":
+            if self.firing_mode.get() == "toggle":
+                self.is_firing = not self.is_firing
+            elif self.firing_mode.get() == "hold":
+                self.is_firing = True
+
+    def on_canvas_release(self, event):
+        if self.targeting_mode.get() == "cursor" and self.firing_mode.get() == "hold":
+            self.is_firing = False
+
+    def refresh_connection(self):
+        if self.socket:
+            self.socket.close()
+
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.sprayer_address.get(), self.sprayer_port.get()))
+            self.connection_status.set("Connected")
+        except Exception as e:
+            self.connection_status.set(f"Connection failed: {str(e)}")
+            self.socket = None
+
+    def send_sprayer_command(self, pan_angle, tilt_angle, trigger):
+        if self.socket:
+            try:
+                data = f"{pan_angle},{tilt_angle},{trigger},0\n"  # 0 for red_button as it's not used
+                self.socket.sendall(data.encode())
+                self.logger.info(f"{pan_angle},{tilt_angle},{trigger}")
+            except Exception as e:
+                print(f"Error sending command: {str(e)}")
+                self.connection_status.set("Connection lost")
+                self.socket = None
+
+    def update(self):
+        ret, frame = self.vid.read()
+        if ret:
+            current_time = time.time()
+            if current_time - self.last_update_time >= self.update_interval:
+                self.process_frame(frame)
+                self.last_update_time = current_time
+
+            if self.debug_mode.get():
+                self.draw_debug_info(frame)
+
+            self.photo = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+            self.canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
+
+        self.window.after(10, self.update)
+
+
+    def process_frame(self, frame):
+        mode = self.targeting_mode.get()
+        if mode == "automatic":
+            target = self.process_automatic_mode(frame)
+        elif mode == "cursor":
+            target = self.process_cursor_mode(frame)
+        elif mode == "joystick":
+            target = self.process_joystick_mode(frame)
+        else:
+            target = None
+
+        if target:
+            pixel_x, pixel_y, is_firing = target
+            self.draw_crosshair(frame, self.selected_crosshair, pixel_x, pixel_y)
+            self.display_pan_tilt(frame, pixel_x, pixel_y, mode.capitalize())
+            meter_x, meter_y = pixel_to_meter(pixel_x, pixel_y, self.perspective_transform)
+            pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
+                                           [self.calibration_results["height"],
+                                            self.calibration_results["initial_pan"],
+                                            self.calibration_results["initial_tilt"],
+                                            self.calibration_results["initial_roll"]])
+            self.send_sprayer_command(pan, tilt, 1 if is_firing else 0)
+
+    def process_automatic_mode(self, frame):
+        results = self.yolo_model(frame, verbose=False)
+        dets = self.process_yolo_results(results)
+
+        if len(dets) > 0:
+            self.tracks = self.tracker.update(dets, frame)
+        else:
+            self.tracks = self.tracker.update(np.empty((0, 6)), frame)
+
+        current_time = time.time()
+        if current_time - self.last_target_switch_time > self.target_hold_time.get():
+            self.current_target_index = (self.current_target_index + 1) % max(1, len(self.tracks))
+            self.last_target_switch_time = current_time
+
+        for i, track in enumerate(self.tracks):
+            x1, y1, x2, y2, track_id = track[:5]
+            center_x = int((x1 + x2) / 2)
+            bottom_y = int(y2)
+
+            if i == self.current_target_index:
+                return center_x, bottom_y, self.is_firing
+
+        return None
+
+    def process_cursor_mode(self, frame):
+        x, y = self.cursor_target
+        return x, y, self.is_firing
+
+    def process_joystick_mode(self, frame):
+        if self.joystick:
+            pygame.event.pump()
+            x = -self.joystick.get_axis(0)
+            y = -self.joystick.get_axis(1)
+            trigger = self.joystick.get_button(5)
+
+            pan_angle = int((x + 1) * 90)  # Map -1 to 1 to 0 to 180
+            tilt_angle = int((-y + 1) * 90)  # Map -1 to 1 to 0 to 180, and invert y
+
+            x_pixel = int(pan_angle / 180 * self.frame_width)
+            y_pixel = int((180 - tilt_angle) / 180 * self.frame_height)
+
+            return x_pixel, y_pixel, trigger == 1
+
+        return None
+    def process_yolo_results(self, results):
         dets = []
+        total_area = self.frame_width * self.frame_height
+        min_area = 0.003 * total_area  # 0.3% of total area
+        max_area = 0.3 * total_area    # 30% of total area
+
         for r in results:
             boxes = r.boxes
             for box in boxes:
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                 conf = box.conf[0].cpu().numpy()
                 cls = box.cls[0].cpu().numpy()
-                dets.append([x1, y1, x2, y2, conf, cls])
-        dets = np.array(dets)
+                
+                # Calculate the area of the detection
+                area = (x2 - x1) * (y2 - y1)
+                
+                # Only include detections within the specified area range
+                if min_area <= area <= max_area:
+                    dets.append([x1, y1, x2, y2, conf, cls])
 
-        if len(dets) > 0:
-            # Update tracker
-            tracks = tracker.update(dets, im)
-        else:
-            tracks = tracker.update(np.empty((0, 6)), im)
+        return np.array(dets)
 
-        # Ensure current_target_index is within bounds
-        if tracks.shape[0] > 0:
-            current_target_index = current_target_index % tracks.shape[0]
-        else:
-            current_target_index = 0
+    def draw_crosshair(self, frame, crosshair, center_x, center_y):
+        ch_height, ch_width = crosshair.shape[:2]
+        x_offset = int(center_x - ch_width // 2)
+        y_offset = int(center_y - ch_height // 2)
 
-        # Create a list to store crosshair positions and selection status
-        crosshair_data = []
+        x_start = max(0, x_offset)
+        y_start = max(0, y_offset)
+        x_end = min(frame.shape[1], x_offset + ch_width)
+        y_end = min(frame.shape[0], y_offset + ch_height)
 
-        # Process tracks
-        for i, track in enumerate(tracks):
+        ch_x_start = x_start - x_offset
+        ch_y_start = y_start - y_offset
+        ch_x_end = ch_x_start + (x_end - x_start)
+        ch_y_end = ch_y_start + (y_end - y_start)
+
+        if x_end > x_start and y_end > y_start:
+            alpha_s = crosshair[ch_y_start:ch_y_end, ch_x_start:ch_x_end, 3] / 255.0
+            alpha_l = 1.0 - alpha_s
+
+            for c in range(0, 3):
+                frame[y_start:y_end, x_start:x_end, c] = (alpha_s * crosshair[ch_y_start:ch_y_end, ch_x_start:ch_x_end, c] +
+                                                          alpha_l * frame[y_start:y_end, x_start:x_end, c])
+    def display_pan_tilt(self, frame, x, y, identifier):
+        meter_x, meter_y = pixel_to_meter(x, y, self.perspective_transform)
+        pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
+                                       [self.calibration_results["height"],
+                                        self.calibration_results["initial_pan"],
+                                        self.calibration_results["initial_tilt"],
+                                        self.calibration_results["initial_roll"]])
+        
+        cv2.putText(frame, f"{identifier}: Pan: {pan:.2f}, Tilt: {tilt:.2f}", 
+                    (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    def draw_debug_info(self, frame):
+        for i in range(4):
+            cv2.line(frame, tuple(self.floor_corners[i]), tuple(self.floor_corners[(i+1)%4]), (0, 255, 255), 2)
+
+        for track in self.tracks:
             x1, y1, x2, y2, track_id = track[:5]
-            center_x = int((x1 + x2) / 2)
-            bottom_y = int(y2)
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+            cv2.putText(frame, f"ID: {int(track_id)}", (int(x1), int(y1) - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            is_selected = (i == current_target_index)
-            crosshair_data.append((center_x, bottom_y, is_selected))
+    def load_image(self, file_path, max_size=100):
+        img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            print(f"Failed to load image: {file_path}")
+            return None
+        
+        h, w = img.shape[:2]
+        if max(h, w) > max_size:
+            scale = max_size / max(h, w)
+            img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            print(f"Resized image to fit within {max_size}x{max_size}")
+        
+        return img
 
-            if is_selected:
-                # Selected track: calculate pan/tilt
-                meter_x, meter_y = pixel_to_meter(center_x, bottom_y, perspective_transform)
 
-                pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
-                                               [calibration_results["height"],
-                                                calibration_results["initial_pan"],
-                                                calibration_results["initial_tilt"],
-                                                calibration_results["initial_roll"]])
+    def create_crosshair_variants(self, crosshair_img):
+        if crosshair_img.shape[2] == 4:
+            selected_crosshair = crosshair_img.copy()
+        else:
+            selected_crosshair = cv2.cvtColor(crosshair_img, cv2.COLOR_BGR2BGRA)
 
-                # Display pan and tilt for selected track
-                cv2.putText(im, f"ID: {track_id}, Pan: {pan:.2f}, Tilt: {tilt:.2f}", 
-                            (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        non_selected_crosshair = selected_crosshair.copy()
+        non_selected_crosshair[:, :, [0, 2]] = non_selected_crosshair[:, :, [2, 0]]
 
-        # Create a single crosshair frame for all tracks
-        all_crosshairs = np.zeros((im.shape[0], im.shape[1], 4), dtype=np.uint8)
+        return selected_crosshair, non_selected_crosshair
 
-        # Draw all crosshairs
-        for center_x, bottom_y, is_selected in crosshair_data:
-            crosshair = selected_crosshair if is_selected else non_selected_crosshair
-            ch_height, ch_width = crosshair.shape[:2]
-            x_offset = int(center_x - ch_width // 2)
-            y_offset = int(bottom_y - ch_height)
-
-            # Ensure the crosshair is within the frame bounds
-            x_start = max(0, x_offset)
-            y_start = max(0, y_offset)
-            x_end = min(all_crosshairs.shape[1], x_offset + ch_width)
-            y_end = min(all_crosshairs.shape[0], y_offset + ch_height)
-
-            ch_x_start = x_start - x_offset
-            ch_y_start = y_start - y_offset
-            ch_x_end = ch_x_start + (x_end - x_start)
-            ch_y_end = ch_y_start + (y_end - y_start)
-
-            all_crosshairs[y_start:y_end, x_start:x_end] = cv2.add(
-                all_crosshairs[y_start:y_end, x_start:x_end],
-                crosshair[ch_y_start:ch_y_end, ch_x_start:ch_x_end]
-            )
-
-        # Project all crosshairs at once
-        warped = cv2.warpPerspective(all_crosshairs, crosshair_transform, (im.shape[1], im.shape[0]))
-        alpha = warped[:,:,3] / 255.0
-        for c in range(3):
-            im[:,:,c] = im[:,:,c] * (1 - alpha) + warped[:,:,c] * alpha
-
-        # Display offset information
-        cv2.putText(im, f"Offset: {image_offset[0]:.2f}m, {image_offset[1]:.2f}m", 
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-        # Display the image
-        cv2.imshow('YOLOv8 + DeepOCSORT tracking with Projected Crosshair', im)
-
-        # Handle key presses
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('d'):  # Left arrow
-            image_offset[0] -= 0.1
-        elif key == ord('a'):  # Right arrow
-            image_offset[0] += 0.1
-        elif key == ord('s'):  # Up arrow
-            image_offset[1] -= 0.1
-        elif key == ord('w'):  # Down arrow
-            image_offset[1] += 0.1
-        elif key == 82:  # Up arrow
-            current_target_index = (current_target_index - 1) % max(1, tracks.shape[0])
-        elif key == 84:  # Down arrow
-            current_target_index = (current_target_index + 1) % max(1, tracks.shape[0])
-
-    vid.release()
-    cv2.destroyAllWindows()
+  
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = VideoTrackingApp(root)
+    root.mainloop()

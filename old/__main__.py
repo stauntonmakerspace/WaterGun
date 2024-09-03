@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 # from watergun.image_processing import load_crosshair, load_floor_corners
 # from watergun.stream_handling import process_stream
-import os
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

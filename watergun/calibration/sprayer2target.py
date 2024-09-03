@@ -1,4 +1,3 @@
-import numpy as np
 from scipy.optimize import minimize
 import json 
 from watergun.common import calculate_pan_tilt
