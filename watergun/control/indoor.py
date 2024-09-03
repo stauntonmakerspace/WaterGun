@@ -27,7 +27,20 @@ def setup_logger():
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         return logger
+def load_image(file_path, max_size=100):
+    img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        print(f"Failed to load image: {file_path}")
+        return None
     
+    h, w = img.shape[:2]
+    if max(h, w) > max_size:
+        scale = max_size / max(h, w)
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        print(f"Resized image to fit within {max_size}x{max_size}")
+    
+    return img
+
 def load_floor_corners(file_path, frame_width, frame_height):
     try:
         floor_corners = np.load(file_path)
@@ -57,13 +70,11 @@ class VideoTrackingApp:
             fp16=False,
         )
 
-        self.crosshair_img = self.load_image(os.getenv('CROSSHAIR_FILE'))
+        self.crosshair_img = load_image(os.getenv('CROSSHAIR_FILE','assets/crosshair.png'))
         self.floor_corners, self.perspective_transform, self.inverse_perspective_transform = load_floor_corners(
-            os.getenv('FLOOR_CORNERS_FILE'), self.frame_width, self.frame_height)
+            os.getenv('FLOOR_CORNERS_FILE','assets/floor_corners.npy'), self.frame_width, self.frame_height)
         with open("calibration_results.json", "r") as f:
             self.calibration_results = json.load(f)
-
-        self.selected_crosshair, self.non_selected_crosshair = self.create_crosshair_variants(self.crosshair_img)
 
         self.current_target_index = 0
         self.tracks = []
@@ -115,7 +126,7 @@ class VideoTrackingApp:
         ttk.Radiobutton(control_frame, text="Cursor", variable=self.targeting_mode, value="cursor").pack(anchor="w")
         ttk.Radiobutton(control_frame, text="Joystick", variable=self.targeting_mode, value="joystick").pack(anchor="w")
 
-        ttk.Label(control_frame, text="(Cursor)Firing Mode:").pack(anchor="w", pady=5)
+        ttk.Label(control_frame, text="(Cursor) Firing Mode:").pack(anchor="w", pady=5)
         ttk.Radiobutton(control_frame, text="Toggle", variable=self.firing_mode, value="toggle").pack(anchor="w")
         ttk.Radiobutton(control_frame, text="Hold to Fire", variable=self.firing_mode, value="hold").pack(anchor="w")
 
@@ -203,8 +214,7 @@ class VideoTrackingApp:
 
         if target:
             pixel_x, pixel_y, is_firing = target
-            self.draw_crosshair(frame, self.selected_crosshair, pixel_x, pixel_y)
-            self.display_pan_tilt(frame, pixel_x, pixel_y, mode.capitalize())
+            self.draw_crosshair(frame, pixel_x, pixel_y)
             meter_x, meter_y = pixel_to_meter(pixel_x, pixel_y, self.perspective_transform)
             pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
                                            [self.calibration_results["height"],
@@ -212,7 +222,7 @@ class VideoTrackingApp:
                                             self.calibration_results["initial_tilt"],
                                             self.calibration_results["initial_roll"]])
             self.send_sprayer_command(pan, tilt, 1 if is_firing else 0)
-
+    #region Targeting Modes
     def process_automatic_mode(self, frame):
         results = self.yolo_model(frame, verbose=False)
         dets = self.process_yolo_results(results)
@@ -257,6 +267,8 @@ class VideoTrackingApp:
             return x_pixel, y_pixel, trigger == 1
 
         return None
+    #endregion    
+    
     def process_yolo_results(self, results):
         dets = []
         total_area = self.frame_width * self.frame_height
@@ -279,8 +291,8 @@ class VideoTrackingApp:
 
         return np.array(dets)
 
-    def draw_crosshair(self, frame, crosshair, center_x, center_y):
-        ch_height, ch_width = crosshair.shape[:2]
+    def draw_crosshair(self, frame, center_x, center_y):
+        ch_height, ch_width = self.crosshair_img.shape[:2]
         x_offset = int(center_x - ch_width // 2)
         y_offset = int(center_y - ch_height // 2)
 
@@ -295,23 +307,13 @@ class VideoTrackingApp:
         ch_y_end = ch_y_start + (y_end - y_start)
 
         if x_end > x_start and y_end > y_start:
-            alpha_s = crosshair[ch_y_start:ch_y_end, ch_x_start:ch_x_end, 3] / 255.0
+            alpha_s = self.crosshair_img[ch_y_start:ch_y_end, ch_x_start:ch_x_end, 3] / 255.0
             alpha_l = 1.0 - alpha_s
 
             for c in range(0, 3):
-                frame[y_start:y_end, x_start:x_end, c] = (alpha_s * crosshair[ch_y_start:ch_y_end, ch_x_start:ch_x_end, c] +
+                frame[y_start:y_end, x_start:x_end, c] = (alpha_s * self.crosshair_img[ch_y_start:ch_y_end, ch_x_start:ch_x_end, c] +
                                                           alpha_l * frame[y_start:y_end, x_start:x_end, c])
-    def display_pan_tilt(self, frame, x, y, identifier):
-        meter_x, meter_y = pixel_to_meter(x, y, self.perspective_transform)
-        pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
-                                       [self.calibration_results["height"],
-                                        self.calibration_results["initial_pan"],
-                                        self.calibration_results["initial_tilt"],
-                                        self.calibration_results["initial_roll"]])
-        
-        cv2.putText(frame, f"{identifier}: Pan: {pan:.2f}, Tilt: {tilt:.2f}", 
-                    (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
+   
     def draw_debug_info(self, frame):
         for i in range(4):
             cv2.line(frame, tuple(self.floor_corners[i]), tuple(self.floor_corners[(i+1)%4]), (0, 255, 255), 2)
@@ -321,34 +323,6 @@ class VideoTrackingApp:
             cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
             cv2.putText(frame, f"ID: {int(track_id)}", (int(x1), int(y1) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-    def load_image(self, file_path, max_size=100):
-        img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
-        if img is None:
-            print(f"Failed to load image: {file_path}")
-            return None
-        
-        h, w = img.shape[:2]
-        if max(h, w) > max_size:
-            scale = max_size / max(h, w)
-            img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            print(f"Resized image to fit within {max_size}x{max_size}")
-        
-        return img
-
-
-    def create_crosshair_variants(self, crosshair_img):
-        if crosshair_img.shape[2] == 4:
-            selected_crosshair = crosshair_img.copy()
-        else:
-            selected_crosshair = cv2.cvtColor(crosshair_img, cv2.COLOR_BGR2BGRA)
-
-        non_selected_crosshair = selected_crosshair.copy()
-        non_selected_crosshair[:, :, [0, 2]] = non_selected_crosshair[:, :, [2, 0]]
-
-        return selected_crosshair, non_selected_crosshair
-
-  
 
 if __name__ == "__main__":
     root = tk.Tk()
