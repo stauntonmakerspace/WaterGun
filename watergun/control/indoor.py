@@ -14,6 +14,7 @@ import os
 import logging
 import sys
 import pygame
+from watergun.common.draw import draw_crosshair
 def pixel_to_meter( pixel_x, pixel_y, perspective_transform):
     px_homogeneous = np.array([[pixel_x, pixel_y, 1]], dtype=np.float32).T
     meter_homogeneous = perspective_transform @ px_homogeneous
@@ -27,19 +28,6 @@ def setup_logger():
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         return logger
-def load_image(file_path, max_size=100):
-    img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        print(f"Failed to load image: {file_path}")
-        return None
-    
-    h, w = img.shape[:2]
-    if max(h, w) > max_size:
-        scale = max_size / max(h, w)
-        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        print(f"Resized image to fit within {max_size}x{max_size}")
-    
-    return img
 
 def load_floor_corners(file_path, frame_width, frame_height):
     try:
@@ -57,7 +45,7 @@ def load_floor_corners(file_path, frame_width, frame_height):
 class VideoTrackingApp:
     def __init__(self, window, video_source=0):
         self.window = window
-        self.window.title("Video Tracking App")
+        self.window.title("Sprayer Control App")
 
         self.vid = cv2.VideoCapture(video_source)
         self.frame_width = int(self.vid.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -70,7 +58,7 @@ class VideoTrackingApp:
             fp16=False,
         )
 
-        self.crosshair_img = load_image(os.getenv('CROSSHAIR_FILE','assets/crosshair.png'))
+        
         self.floor_corners, self.perspective_transform, self.inverse_perspective_transform = load_floor_corners(
             os.getenv('FLOOR_CORNERS_FILE','assets/floor_corners.npy'), self.frame_width, self.frame_height)
         with open("calibration_results.json", "r") as f:
@@ -145,7 +133,7 @@ class VideoTrackingApp:
         ttk.Button(control_frame, text="Refresh Connection", command=self.refresh_connection).pack(anchor="w", pady=5)
 
         self.window.after(10, self.update)
-
+    #region Event Handlers
     def on_mouse_move(self, event):
         if self.targeting_mode.get() == "cursor":
             self.cursor_target = [event.x, event.y]
@@ -160,7 +148,7 @@ class VideoTrackingApp:
     def on_canvas_release(self, event):
         if self.targeting_mode.get() == "cursor" and self.firing_mode.get() == "hold":
             self.is_firing = False
-
+    #endregion
     def refresh_connection(self):
         if self.socket:
             self.socket.close()
@@ -200,7 +188,6 @@ class VideoTrackingApp:
 
         self.window.after(10, self.update)
 
-
     def process_frame(self, frame):
         mode = self.targeting_mode.get()
         if mode == "automatic":
@@ -214,7 +201,7 @@ class VideoTrackingApp:
 
         if target:
             pixel_x, pixel_y, is_firing = target
-            self.draw_crosshair(frame, pixel_x, pixel_y)
+            draw_crosshair(frame, pixel_x, pixel_y)
             meter_x, meter_y = pixel_to_meter(pixel_x, pixel_y, self.perspective_transform)
             pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
                                            [self.calibration_results["height"],
@@ -222,7 +209,29 @@ class VideoTrackingApp:
                                             self.calibration_results["initial_tilt"],
                                             self.calibration_results["initial_roll"]])
             self.send_sprayer_command(pan, tilt, 1 if is_firing else 0)
-    #region Targeting Modes
+    #region Targeting Modes 
+    def process_yolo_results(self, results):
+        dets = []
+        total_area = self.frame_width * self.frame_height
+        min_area = 0.003 * total_area  # 0.3% of total area
+        max_area = 0.3 * total_area    # 30% of total area
+
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                conf = box.conf[0].cpu().numpy()
+                cls = box.cls[0].cpu().numpy()
+                
+                # Calculate the area of the detection
+                area = (x2 - x1) * (y2 - y1)
+                
+                # Only include detections within the specified area range
+                if min_area <= area <= max_area:
+                    dets.append([x1, y1, x2, y2, conf, cls])
+
+        return np.array(dets)
+
     def process_automatic_mode(self, frame):
         results = self.yolo_model(frame, verbose=False)
         dets = self.process_yolo_results(results)
@@ -268,51 +277,6 @@ class VideoTrackingApp:
 
         return None
     #endregion    
-    
-    def process_yolo_results(self, results):
-        dets = []
-        total_area = self.frame_width * self.frame_height
-        min_area = 0.003 * total_area  # 0.3% of total area
-        max_area = 0.3 * total_area    # 30% of total area
-
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                conf = box.conf[0].cpu().numpy()
-                cls = box.cls[0].cpu().numpy()
-                
-                # Calculate the area of the detection
-                area = (x2 - x1) * (y2 - y1)
-                
-                # Only include detections within the specified area range
-                if min_area <= area <= max_area:
-                    dets.append([x1, y1, x2, y2, conf, cls])
-
-        return np.array(dets)
-
-    def draw_crosshair(self, frame, center_x, center_y):
-        ch_height, ch_width = self.crosshair_img.shape[:2]
-        x_offset = int(center_x - ch_width // 2)
-        y_offset = int(center_y - ch_height // 2)
-
-        x_start = max(0, x_offset)
-        y_start = max(0, y_offset)
-        x_end = min(frame.shape[1], x_offset + ch_width)
-        y_end = min(frame.shape[0], y_offset + ch_height)
-
-        ch_x_start = x_start - x_offset
-        ch_y_start = y_start - y_offset
-        ch_x_end = ch_x_start + (x_end - x_start)
-        ch_y_end = ch_y_start + (y_end - y_start)
-
-        if x_end > x_start and y_end > y_start:
-            alpha_s = self.crosshair_img[ch_y_start:ch_y_end, ch_x_start:ch_x_end, 3] / 255.0
-            alpha_l = 1.0 - alpha_s
-
-            for c in range(0, 3):
-                frame[y_start:y_end, x_start:x_end, c] = (alpha_s * self.crosshair_img[ch_y_start:ch_y_end, ch_x_start:ch_x_end, c] +
-                                                          alpha_l * frame[y_start:y_end, x_start:x_end, c])
    
     def draw_debug_info(self, frame):
         for i in range(4):
