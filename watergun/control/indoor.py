@@ -9,25 +9,23 @@ import time
 from boxmot import DeepOCSORT
 from ultralytics import YOLO
 import json
-from watergun.common import calculate_pan_tilt
+from watergun.common import calculate_pan_tilt, pixel_to_meter
 import os
 import logging
 import sys
 import pygame
 from watergun.common.draw import draw_crosshair
-def pixel_to_meter( pixel_x, pixel_y, perspective_transform):
-    px_homogeneous = np.array([[pixel_x, pixel_y, 1]], dtype=np.float32).T
-    meter_homogeneous = perspective_transform @ px_homogeneous
-    meter_x, meter_y, _ = meter_homogeneous.ravel() / meter_homogeneous[2]
-    return meter_x, meter_y
+
+
+
 def setup_logger():
-        logger = logging.getLogger('video_tracking_logger')
-        logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler(sys.stdout)
-        formatter = logging.Formatter('%(asctime)s,%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        return logger
+    logger = logging.getLogger('video_tracking_logger')
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s,%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
 
 def load_floor_corners(file_path, frame_width, frame_height):
     try:
@@ -51,14 +49,24 @@ class VideoTrackingApp:
         self.frame_width = int(self.vid.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_height = int(self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+        # Set maximum display dimensions
+        self.max_display_width = 800
+        self.max_display_height = 600
+
+        # Initialize display dimensions
+        self.display_width = self.max_display_width
+        self.display_height = self.max_display_height
+
+        # Calculate the initial scaling factor
+        self.update_scale_factor()
+
         self.yolo_model = YOLO('models/yolov8n.pt')
         self.tracker = DeepOCSORT(
             model_weights=Path('models/osnet_x0_25_msmt17.pt'),
-            device='cuda:0',
+            device='cpu',
             fp16=False,
         )
 
-        
         self.floor_corners, self.perspective_transform, self.inverse_perspective_transform = load_floor_corners(
             os.getenv('FLOOR_CORNERS_FILE','assets/floor_corners.npy'), self.frame_width, self.frame_height)
         with open("calibration_results.json", "r") as f:
@@ -83,29 +91,38 @@ class VideoTrackingApp:
         self.update_interval = 1.0 / 30  # 30 updates per second
         self.last_update_time = time.time()
 
-        # Joystick setup
-        pygame.init()
-        pygame.joystick.init()
         self.joystick = None
-        if pygame.joystick.get_count() > 0:
-            self.joystick = pygame.joystick.Joystick(0)
-            self.joystick.init()
+        # if pygame.joystick.get_count() > 0:
+        #     self.joystick = pygame.joystick.Joystick(0)
+        #     self.joystick.init()
 
         self.create_ui()
 
-
     def create_ui(self):
-        video_frame = ttk.Frame(self.window)
-        video_frame.grid(row=0, column=0, padx=10, pady=10)
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(0, weight=1)
 
-        control_frame = ttk.Frame(self.window)
+        main_frame = ttk.Frame(self.window)
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        main_frame.columnconfigure(0, weight=3)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(0, weight=1)
+
+        video_frame = ttk.Frame(main_frame)
+        video_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        video_frame.columnconfigure(0, weight=1)
+        video_frame.rowconfigure(0, weight=1)
+
+        control_frame = ttk.Frame(main_frame)
         control_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
 
-        self.canvas = tk.Canvas(video_frame, width=self.frame_width, height=self.frame_height)
-        self.canvas.pack()
+        self.canvas = tk.Canvas(video_frame, width=self.display_width, height=self.display_height)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
         self.canvas.bind("<Motion>", self.on_mouse_move)
         self.canvas.bind("<Button-1>", self.on_canvas_click)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+
 
         ttk.Checkbutton(control_frame, text="Debug Mode", variable=self.debug_mode).pack(anchor="w", pady=5)
 
@@ -133,10 +150,6 @@ class VideoTrackingApp:
         ttk.Button(control_frame, text="Refresh Connection", command=self.refresh_connection).pack(anchor="w", pady=5)
 
         self.window.after(10, self.update)
-    #region Event Handlers
-    def on_mouse_move(self, event):
-        if self.targeting_mode.get() == "cursor":
-            self.cursor_target = [event.x, event.y]
 
     def on_canvas_click(self, event):
         if self.targeting_mode.get() == "cursor":
@@ -148,7 +161,7 @@ class VideoTrackingApp:
     def on_canvas_release(self, event):
         if self.targeting_mode.get() == "cursor" and self.firing_mode.get() == "hold":
             self.is_firing = False
-    #endregion
+
     def refresh_connection(self):
         if self.socket:
             self.socket.close()
@@ -172,6 +185,24 @@ class VideoTrackingApp:
                 self.connection_status.set("Connection lost")
                 self.socket = None
 
+    def update_scale_factor(self):
+        # Calculate the scaling factor while maintaining aspect ratio
+        width_scale = self.display_width / self.frame_width
+        height_scale = self.display_height / self.frame_height
+        self.scale_factor = min(width_scale, height_scale)
+
+        # Update the actual display dimensions to maintain aspect ratio
+        self.display_width = int(self.frame_width * self.scale_factor)
+        self.display_height = int(self.frame_height * self.scale_factor)
+
+    def on_canvas_resize(self, event):
+        # Update the canvas size
+        self.display_width = event.width
+        self.display_height = event.height
+        
+        # Recalculate the scaling factor and update display dimensions
+        self.update_scale_factor()
+
     def update(self):
         ret, frame = self.vid.read()
         if ret:
@@ -183,11 +214,37 @@ class VideoTrackingApp:
             if self.debug_mode.get():
                 self.draw_debug_info(frame)
 
-            self.photo = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-            self.canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
+            # Resize the frame for display while maintaining aspect ratio
+            display_frame = cv2.resize(frame, (self.display_width, self.display_height))
+            
+            self.photo = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)))
+            
+            # Calculate position to center the image on the canvas
+            x_position = (self.canvas.winfo_width() - self.display_width) // 2
+            y_position = (self.canvas.winfo_height() - self.display_height) // 2
+            
+            # Clear previous image and draw new one
+            self.canvas.delete("all")
+            self.canvas.create_image(x_position, y_position, image=self.photo, anchor=tk.NW)
 
         self.window.after(10, self.update)
 
+    def on_mouse_move(self, event):
+        if self.targeting_mode.get() == "cursor":
+            # Convert display coordinates to original frame coordinates
+            canvas_x = self.canvas.winfo_width()
+            canvas_y = self.canvas.winfo_height()
+            x_offset = (canvas_x - self.display_width) // 2
+            y_offset = (canvas_y - self.display_height) // 2
+            
+            x = int((event.x - x_offset) / self.scale_factor)
+            y = int((event.y - y_offset) / self.scale_factor)
+            
+            # Ensure coordinates are within frame boundaries
+            x = max(0, min(x, self.frame_width - 1))
+            y = max(0, min(y, self.frame_height - 1))
+            
+            self.cursor_target = [x, y]
     def process_frame(self, frame):
         mode = self.targeting_mode.get()
         if mode == "automatic":
@@ -209,12 +266,12 @@ class VideoTrackingApp:
                                             self.calibration_results["initial_tilt"],
                                             self.calibration_results["initial_roll"]])
             self.send_sprayer_command(pan, tilt, 1 if is_firing else 0)
-    #region Targeting Modes 
+
     def process_yolo_results(self, results):
         dets = []
         total_area = self.frame_width * self.frame_height
         min_area = 0.003 * total_area  # 0.3% of total area
-        max_area = 0.3 * total_area    # 30% of total area
+        max_area = 0.9 * total_area    # 30% of total area
 
         for r in results:
             boxes = r.boxes
@@ -260,6 +317,7 @@ class VideoTrackingApp:
         x, y = self.cursor_target
         return x, y, self.is_firing
 
+
     def process_joystick_mode(self, frame):
         if self.joystick:
             pygame.event.pump()
@@ -276,7 +334,6 @@ class VideoTrackingApp:
             return x_pixel, y_pixel, trigger == 1
 
         return None
-    #endregion    
    
     def draw_debug_info(self, frame):
         for i in range(4):

@@ -1,5 +1,7 @@
 #include <Servo.h>
-
+// TODO: Add a firing time limit if no update is recieved
+// TODO: Add a calivration check mode which moves to set angles with delays 
+// TODO: the red button 
 // Pin definitions
 #define PAN_SERVO_PIN 9
 #define TILT_SERVO_PIN 10
