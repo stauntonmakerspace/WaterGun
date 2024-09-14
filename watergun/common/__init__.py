@@ -1,6 +1,12 @@
 import numpy as np
 from scipy.optimize import minimize
 
+def pixel_to_meter(pixel_x, pixel_y, perspective_transform):
+    px_homogeneous = np.array([[pixel_x, pixel_y, 1]], dtype=np.float32).T
+    meter_homogeneous = perspective_transform @ px_homogeneous
+    meter_x, meter_y, _ = meter_homogeneous.ravel() / meter_homogeneous[2]
+    return meter_x, meter_y
+
 def rotation_matrix(roll, pitch, yaw):
     """
     Create a rotation matrix from roll, pitch, and yaw angles.

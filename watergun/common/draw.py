@@ -16,7 +16,7 @@ def load_image(file_path, max_size=100):
     
     return img
 
-crosshair_img = load_image(os.getenv('CROSSHAIR_FILE','assets/crosshair.png'))
+crosshair_img = load_image('/Users/walkenz1/Projects/WatGn/WaterGun/assets/crosshair.png')
 def draw_crosshair(frame, center_x, center_y):
     ch_height, ch_width = crosshair_img.shape[:2]
     x_offset = int(center_x - ch_width // 2)
