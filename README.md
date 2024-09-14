@@ -8,6 +8,8 @@
 * Control
 
 ```
+git clone https://github.com/stauntonmakerspace/WaterGun
+cd WaterGun/
 pip install -e .
 ```
 

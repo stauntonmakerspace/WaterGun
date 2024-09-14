@@ -5,3 +5,6 @@ ultralytics
 python-dotenv
 pygame
 pyserial
+pillow
+tk
+scipy
