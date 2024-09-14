@@ -67,7 +67,7 @@ class VideoTrackingApp:
         self.current_target_index = 0
         self.tracks = []
         self.debug_mode = tk.BooleanVar(value=False)
-        self.targeting_mode = tk.StringVar(value="automatic")
+        self.targeting_mode = tk.StringVar(value="cursor")
         self.firing_mode = tk.StringVar(value="toggle")
         self.target_hold_time = tk.DoubleVar(value=5.0)
         self.cursor_target = [self.frame_width // 2, self.frame_height // 2]
