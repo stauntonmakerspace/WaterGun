@@ -1,4 +1,7 @@
 __pycache__/
 *.pt
 *.onnx
-*.egg-info/
+*.egg-info.python-version/
+.old/
+.venv/
+.python-version
