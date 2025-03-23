@@ -1,3 +1,27 @@
+Metadata-Version: 2.4
+Name: watergun
+Version: 0.2.0
+Summary: A project for controlling a water gun using computer vision
+Author-email: Nile Walker <nilezwalker@gmail.com>
+Project-URL: Homepage, https://github.com/stauntonmakerspace/WaterGun
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: boxmot>=12.0.2
+Requires-Dist: numpy>=1.26.4
+Requires-Dist: opencv-python>=4.11.0.86
+Requires-Dist: pillow>=11.1.0
+Requires-Dist: pip>=25.0.1
+Requires-Dist: pygame>=2.6.1
+Requires-Dist: pyserial>=3.5
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: scipy>=1.13.1
+Requires-Dist: setuptools>=77.0.3
+Requires-Dist: tk>=0.1.0
+Requires-Dist: ultralytics>=8.3.94
+
 # Staunton Water Gun
 
 ## Installation
@@ -13,17 +37,6 @@ git clone https://github.com/stauntonmakerspace/WaterGun
 cd WaterGun/
 pip install -e .
 ```
-
-arduino-cli core install arduino:avr
-
-
-python3 -c "import cv2;print(cv2.getBuildInformation())" | grep -i gstreamer
-
-
-sudo apt update
-sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 libcairo2-dev pkg-config python3-dev
-sudo apt install gstreamer1.0-libav
-
 
 ## Printed Parts
 * [Geared Pan Tilt Model](https://www.thingiverse.com/thing:898517)
@@ -47,27 +60,6 @@ sudo apt install gstreamer1.0-libav
 
 
 
-gst-launch-1.0 v4l2src device=/dev/video0 ! videoconvert ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! rtph264pay ! udpsink host=192.168.1.69 port=5000
-
-    sudo apt-get install -y \
-        build-essential \
-        cmake \
-        git \
-        gfortran \
-        libatlas-base-dev \
-        libavcodec-dev \
-        libavformat-dev \
-        libavresample-dev \
-        libcanberra-gtk3-module \
-        libdc1394-22-dev \
-        libeigen3-dev \
-        libglew-dev \
-        libgstreamer-plugins-base1.0-dev \
-        libgstreamer-plugins-good1.0-dev \
-        libgstreamer1.0-dev \
-        libgtk-3-dev \
 
 
-~/local/bin/arduino-cli compile /home/pi/WaterGun/duino/ -b arduino:avr:mega
 
-~/local/bin/arduino-cli upload /home/pi/WaterGun/duino/ -p /dev/ttyACM0 -b arduino:avr:mega

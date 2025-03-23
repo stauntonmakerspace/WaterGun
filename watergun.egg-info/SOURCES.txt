@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+watergun.egg-info/PKG-INFO
+watergun.egg-info/SOURCES.txt
+watergun.egg-info/dependency_links.txt
+watergun.egg-info/requires.txt
+watergun.egg-info/top_level.txt

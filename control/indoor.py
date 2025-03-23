@@ -6,17 +6,18 @@ import cv2
 import numpy as np
 import socket
 import time
-from boxmot import DeepOCSORT
+from boxmot import DeepOcSort
 from ultralytics import YOLO
 import json
+import watergun
 from watergun.common import calculate_pan_tilt, pixel_to_meter
 import os
 import logging
 import sys
 import pygame
 from watergun.common.draw import draw_crosshair
-
-
+pygame.init()
+pygame.joystick.init()
 
 def setup_logger():
     logger = logging.getLogger('video_tracking_logger')
@@ -44,8 +45,20 @@ class VideoTrackingApp:
     def __init__(self, window, video_source=0):
         self.window = window
         self.window.title("Sprayer Control App")
+        # GStreamer pipeline equivalent to your command
+        gst_str = (
+            "udpsrc port=5045 caps=\"application/x-rtp, media=(string)video, encoding-name=(string)H264\" ! "
+            "rtph264depay ! avdec_h264 ! videoconvert ! appsink"
+        )
 
-        self.vid = cv2.VideoCapture(video_source)
+        # Open the GStreamer pipeline with OpenCV
+        self.vid = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+
+        # self.vid = cv2.VideoCapture(video_source)
+        while True:
+            ret, frame = self.vid.read()
+            if ret:
+                break
         self.frame_width = int(self.vid.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_height = int(self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -61,10 +74,11 @@ class VideoTrackingApp:
         self.update_scale_factor()
 
         self.yolo_model = YOLO('models/yolov8n.pt')
-        self.tracker = DeepOCSORT(
-            model_weights=Path('models/osnet_x0_25_msmt17.pt'),
+        self.tracker = DeepOcSort(
+            reid_weights=Path('models/osnet_x0_25_msmt17.pt'),
             device='cpu',
             fp16=False,
+            half=False
         )
 
         self.floor_corners, self.perspective_transform, self.inverse_perspective_transform = load_floor_corners(
@@ -80,9 +94,11 @@ class VideoTrackingApp:
         self.target_hold_time = tk.DoubleVar(value=5.0)
         self.cursor_target = [self.frame_width // 2, self.frame_height // 2]
         self.last_target_switch_time = 0
+        self.old_x = 0
+        self.old_y = 0
 
-        self.sprayer_address = tk.StringVar(value="127.0.0.1")
-        self.sprayer_port = tk.IntVar(value=1632)
+        self.sprayer_address = tk.StringVar(value="192.168.1.100")
+        self.sprayer_port = tk.IntVar(value=5632)
         self.connection_status = tk.StringVar(value="Disconnected")
         self.socket = None
         self.is_firing = False
@@ -92,9 +108,9 @@ class VideoTrackingApp:
         self.last_update_time = time.time()
 
         self.joystick = None
-        # if pygame.joystick.get_count() > 0:
-        #     self.joystick = pygame.joystick.Joystick(0)
-        #     self.joystick.init()
+        if pygame.joystick.get_count() > 0:
+            self.joystick = pygame.joystick.Joystick(0)
+            self.joystick.init()
 
         self.create_ui()
 
@@ -177,7 +193,7 @@ class VideoTrackingApp:
     def send_sprayer_command(self, pan_angle, tilt_angle, trigger):
         if self.socket:
             try:
-                data = f"{pan_angle},{tilt_angle},{trigger},0\n"  # 0 for red_button as it's not used
+                data = f"{abs(int(tilt_angle))},{abs(int(pan_angle))},{trigger},1\n"  # 0 for red_button as it's not used
                 self.socket.sendall(data.encode())
                 self.logger.info(f"{pan_angle},{tilt_angle},{trigger}")
             except Exception as e:
@@ -206,6 +222,7 @@ class VideoTrackingApp:
     def update(self):
         ret, frame = self.vid.read()
         if ret:
+            frame = cv2.flip(frame,0)
             current_time = time.time()
             if current_time - self.last_update_time >= self.update_interval:
                 self.process_frame(frame)
@@ -243,8 +260,11 @@ class VideoTrackingApp:
             # Ensure coordinates are within frame boundaries
             x = max(0, min(x, self.frame_width - 1))
             y = max(0, min(y, self.frame_height - 1))
+
+            remap = lambda x, min_, max_, tmin, tmax: tmin + (x - min_) * (tmax - tmin) / (max_ - min_)
             
-            self.cursor_target = [x, y]
+            
+            self.cursor_target = [remap(x, 0, self.frame_width, 45, 135),remap(y, 0, self.frame_width, 45, 135)]
     def process_frame(self, frame):
         mode = self.targeting_mode.get()
         if mode == "automatic":
@@ -258,13 +278,14 @@ class VideoTrackingApp:
 
         if target:
             pixel_x, pixel_y, is_firing = target
-            draw_crosshair(frame, pixel_x, pixel_y)
-            meter_x, meter_y = pixel_to_meter(pixel_x, pixel_y, self.perspective_transform)
-            pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
-                                           [self.calibration_results["height"],
-                                            self.calibration_results["initial_pan"],
-                                            self.calibration_results["initial_tilt"],
-                                            self.calibration_results["initial_roll"]])
+            pan,tilt = pixel_x, pixel_y
+            # draw_crosshair(frame, pixel_x, pixel_y)
+            # meter_x, meter_y = pixel_to_meter(pixel_x, pixel_y, self.perspective_transform)
+            # pan, tilt = calculate_pan_tilt(meter_x, meter_y, 0, 
+            #                                [self.calibration_results["height"],
+            #                                 self.calibration_results["initial_pan"],
+            #                                 self.calibration_results["initial_tilt"],
+            #                                 self.calibration_results["initial_roll"]])
             self.send_sprayer_command(pan, tilt, 1 if is_firing else 0)
 
     def process_yolo_results(self, results):
@@ -321,17 +342,25 @@ class VideoTrackingApp:
     def process_joystick_mode(self, frame):
         if self.joystick:
             pygame.event.pump()
-            x = -self.joystick.get_axis(0)
-            y = -self.joystick.get_axis(1)
+            
+            x = self.joystick.get_axis(1)
+            y = self.joystick.get_axis(0)
+
             trigger = self.joystick.get_button(5)
 
-            pan_angle = int((x + 1) * 90)  # Map -1 to 1 to 0 to 180
-            tilt_angle = int((-y + 1) * 90)  # Map -1 to 1 to 0 to 180, and invert y
+            self.old_x += (abs(x) > .75)* (10 if x > 0 else -10) 
+            self.old_y += (abs(y) > .75) * (10 if y > 0 else -10)
+            self.old_x = min(max(0, self.old_x),180)
+            self.old_y = min(max(0, self.old_y),180)
+            trigger = trigger > 0 
 
-            x_pixel = int(pan_angle / 180 * self.frame_width)
-            y_pixel = int((180 - tilt_angle) / 180 * self.frame_height)
+            # pan_angle = int((x + 1) * 90)  # Map -1 to 1 to 0 to 180
+            # tilt_angle = int((-y + 1) * 90)  # Map -1 to 1 to 0 to 180, and invert y
 
-            return x_pixel, y_pixel, trigger == 1
+            # x_pixel = int(pan_angle / 180 * self.frame_width)
+            # y_pixel = int((180 - tilt_angle) / 180 * self.frame_height)
+
+            return self.old_x, self.old_y, trigger == 1
 
         return None
    
@@ -347,5 +376,6 @@ class VideoTrackingApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = VideoTrackingApp(root)
+    video_stream = "udpsrc port=5045 ! application/x-rtp,media=video,encoding-name=H264 ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink"
+    app = VideoTrackingApp(root, video_stream)
     root.mainloop()
