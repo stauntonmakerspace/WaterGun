@@ -13,7 +13,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "boxmot>=12.0.2",
+    "aiortc>=1.13.0",
+    # "boxmot>=12.0.2",
     "numpy>=1.26.4",
     "opencv-python>=4.11.0.86",
     "pillow>=11.1.0",
@@ -24,7 +25,8 @@ dependencies = [
     "scipy>=1.13.1",
     "setuptools>=77.0.3",
     "tk>=0.1.0",
-    "ultralytics>=8.3.94",
+    # "ultralytics>=8.3.94",
+    "websockets>=15.0.1",
 ]
 
 [project.urls]

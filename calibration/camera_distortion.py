@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 def calibrate_camera():
     # Set up camera
-    cap = cv2.VideoCapture('http://192.168.1.161:8000/stream.mjpg')
+    # cap = cv2.VideoCapture('http://192.168.1.161:8000/stream.mjpg')
 
     # Chessboard parameters
     chessboard_size = (9, 6)

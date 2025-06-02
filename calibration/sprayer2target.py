@@ -1,6 +1,6 @@
 from scipy.optimize import minimize
 import json 
-from watergun.common import calculate_pan_tilt
+from common import calculate_pan_tilt
 'http://192.168.1.161:8000/stream.mjpg'
 
 def error_function(params, calibration_points, measured_angles):
