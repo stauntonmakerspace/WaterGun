@@ -1,28 +1,31 @@
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TargetCoords {
-    x: f64, // Percentage 0-100
-    y: f64, // Percentage 0-100
-}
+// src-tauri/src/schemas.rs
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PanTiltCommand {
-    pan: f64,  // Degrees 0-180
-    tilt: f64, // Degrees 0-180
-    trigger: bool,
+pub struct TargetCoords {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackingData {
-    tracks: Vec<Track>,
-    current_target_index: usize,
+    pub tracks: Vec<Track>,
+    pub current_target_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
-    id: u32,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-    confidence: f64,
+    pub id: u32,
+    pub x1: f64,
+    pub y1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanTiltCommand {
+    pub pan: f64,
+    pub tilt: f64,
+    pub trigger: bool,
 }

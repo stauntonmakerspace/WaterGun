@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
+
 mod config;
 mod schemas;
-use schemas::*;
-use config::{Settings,CalibrationResults};
 
+use schemas::*;
+use config::{Settings, CalibrationResults};
 
 // Application state
 pub struct AppState {
@@ -28,14 +29,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            settings: Arc::new(Mutex::new(Settings {
-                targeting_mode: "cursor".to_string(),
-                firing_mode: "toggle".to_string(),
-                target_hold_time: 5.0,
-                device_address: "127.0.0.1".to_string(),
-                device_port: 5632,
-                video_port: 8080,
-            })),
+            settings: Arc::new(Mutex::new(Settings::default())),
             current_target: Arc::new(Mutex::new(TargetCoords { x: 50.0, y: 50.0 })),
             is_firing: Arc::new(Mutex::new(false)),
             udp_socket: Arc::new(Mutex::new(None)),
@@ -62,24 +56,29 @@ async fn connect_to_device(
     
     // Update settings
     {
-        let mut settings = state.settings.lock().unwrap();
+        let mut settings = state.settings.lock().map_err(|e| format!("Failed to lock settings: {}", e))?;
         settings.device_address = address.clone();
         settings.device_port = port;
     }
     
     // Close existing UDP connection
     {
-        let mut socket = state.udp_socket.lock().unwrap();
+        let mut socket = state.udp_socket.lock().map_err(|e| format!("Failed to lock socket: {}", e))?;
         *socket = None;
     }
     
     // Create new UDP socket for commands
     match UdpSocket::bind("0.0.0.0:0") {
         Ok(socket) => {
+            // Set a timeout for the socket
+            socket.set_read_timeout(Some(Duration::from_secs(5)))
+                .map_err(|e| format!("Failed to set socket timeout: {}", e))?;
+            
             match socket.connect(format!("{}:{}", address, port)) {
                 Ok(_) => {
                     {
-                        let mut udp_socket = state.udp_socket.lock().unwrap();
+                        let mut udp_socket = state.udp_socket.lock()
+                            .map_err(|e| format!("Failed to lock socket for storage: {}", e))?;
                         *udp_socket = Some(socket);
                     }
                     
@@ -101,8 +100,10 @@ async fn update_settings(
     settings: Settings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut app_settings = state.settings.lock().unwrap();
+    let mut app_settings = state.settings.lock()
+        .map_err(|e| format!("Failed to lock settings: {}", e))?;
     *app_settings = settings;
+    println!("⚙️ Settings updated");
     Ok(())
 }
 
@@ -115,12 +116,14 @@ async fn update_targeting(
 ) -> Result<(), String> {
     // Update current target and firing state
     {
-        let mut current_target = state.current_target.lock().unwrap();
+        let mut current_target = state.current_target.lock()
+            .map_err(|e| format!("Failed to lock target: {}", e))?;
         *current_target = target.clone();
     }
     
     {
-        let mut firing_state = state.is_firing.lock().unwrap();
+        let mut firing_state = state.is_firing.lock()
+            .map_err(|e| format!("Failed to lock firing state: {}", e))?;
         *firing_state = is_firing;
     }
     
@@ -137,8 +140,10 @@ async fn set_frame_dimensions(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     {
-        let mut frame_w = state.frame_width.lock().unwrap();
-        let mut frame_h = state.frame_height.lock().unwrap();
+        let mut frame_w = state.frame_width.lock()
+            .map_err(|e| format!("Failed to lock frame width: {}", e))?;
+        let mut frame_h = state.frame_height.lock()
+            .map_err(|e| format!("Failed to lock frame height: {}", e))?;
         *frame_w = width;
         *frame_h = height;
     }
@@ -153,7 +158,8 @@ async fn load_calibration_file(state: State<'_, AppState>) -> Result<(), String>
         Ok(contents) => {
             match serde_json::from_str::<CalibrationResults>(&contents) {
                 Ok(calibration) => {
-                    let mut calib_results = state.calibration_results.lock().unwrap();
+                    let mut calib_results = state.calibration_results.lock()
+                        .map_err(|e| format!("Failed to lock calibration: {}", e))?;
                     *calib_results = Some(calibration);
                     println!("📏 Calibration data loaded successfully");
                     Ok(())
@@ -174,7 +180,8 @@ async fn save_settings(
         Ok(json) => {
             match std::fs::write("settings.json", json) {
                 Ok(_) => {
-                    let mut app_settings = state.settings.lock().unwrap();
+                    let mut app_settings = state.settings.lock()
+                        .map_err(|e| format!("Failed to lock settings for save: {}", e))?;
                     *app_settings = settings;
                     println!("💾 Settings saved successfully");
                     Ok(())
@@ -190,7 +197,8 @@ async fn save_settings(
 async fn cleanup_resources(state: State<'_, AppState>) -> Result<(), String> {
     // Close UDP connection
     {
-        let mut socket = state.udp_socket.lock().unwrap();
+        let mut socket = state.udp_socket.lock()
+            .map_err(|e| format!("Failed to lock socket for cleanup: {}", e))?;
         *socket = None;
     }
     
@@ -220,7 +228,8 @@ async fn send_pan_tilt_command(
 ) -> Result<(), String> {
     // Rate limiting - don't send commands too frequently
     {
-        let mut last_time = state.last_command_time.lock().unwrap();
+        let mut last_time = state.last_command_time.lock()
+            .map_err(|e| format!("Failed to lock last command time: {}", e))?;
         let now = Instant::now();
         if now.duration_since(*last_time) < Duration::from_millis(50) { // Max 20 Hz
             return Ok(());
@@ -252,12 +261,15 @@ async fn convert_coordinates_to_pan_tilt(
     x_percent: f64,
     y_percent: f64,
 ) -> Result<(f64, f64), String> {
-    let calibration = state.calibration_results.lock().unwrap();
+    let calibration = state.calibration_results.lock()
+        .map_err(|e| format!("Failed to lock calibration: {}", e))?;
     
     if let Some(calib) = calibration.as_ref() {
         // Get frame dimensions
-        let frame_w = *state.frame_width.lock().unwrap() as f64;
-        let frame_h = *state.frame_height.lock().unwrap() as f64;
+        let frame_w = *state.frame_width.lock()
+            .map_err(|e| format!("Failed to lock frame width: {}", e))? as f64;
+        let frame_h = *state.frame_height.lock()
+            .map_err(|e| format!("Failed to lock frame height: {}", e))? as f64;
         
         // Convert percentage to pixel coordinates
         let pixel_x = (x_percent / 100.0) * frame_w;
@@ -293,17 +305,21 @@ fn apply_perspective_transformation(
 ) -> (f64, f64) {
     // Apply 3x3 perspective transformation matrix
     let w = matrix[6] * x + matrix[7] * y + matrix[8];
-    let transformed_x = (matrix[0] * x + matrix[1] * y + matrix[2]) / w;
-    let transformed_y = (matrix[3] * x + matrix[4] * y + matrix[5]) / w;
-    
-    (transformed_x, transformed_y)
+    if w != 0.0 {
+        let transformed_x = (matrix[0] * x + matrix[1] * y + matrix[2]) / w;
+        let transformed_y = (matrix[3] * x + matrix[4] * y + matrix[5]) / w;
+        (transformed_x, transformed_y)
+    } else {
+        (x, y) // Return original coordinates if transformation fails
+    }
 }
 
 async fn send_udp_command(
     state: &AppState,
     command: &PanTiltCommand,
 ) -> Result<(), String> {
-    let socket = state.udp_socket.lock().unwrap();
+    let socket = state.udp_socket.lock()
+        .map_err(|e| format!("Failed to lock socket: {}", e))?;
     
     if let Some(ref udp) = *socket {
         // Format command as expected by device: "tilt,pan,trigger,1\n"
@@ -333,9 +349,10 @@ fn main() {
             
             if let Ok(contents) = std::fs::read_to_string("settings.json") {
                 if let Ok(settings) = serde_json::from_str::<Settings>(&contents) {
-                    let mut app_settings = state.settings.lock().unwrap();
-                    *app_settings = settings;
-                    println!("📁 Settings loaded from file");
+                    if let Ok(mut app_settings) = state.settings.lock() {
+                        *app_settings = settings;
+                        println!("📁 Settings loaded from file");
+                    }
                 }
             }
             
@@ -343,7 +360,6 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // greet,cc
             connect_to_device,
             update_settings,
             update_targeting,
