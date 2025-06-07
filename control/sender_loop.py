@@ -99,7 +99,7 @@ async def setup_webrtc_and_run(ip_address, port, camera_id):
         await pc.close()
 
 async def main():
-    ip_address = "192.168.1.151"  # IP Address of Remote Server/Machine
+    ip_address = "127.0.0.1"  # IP Address of Remote Server/Machine
     port = 9999
     camera_id = "/home/walkenz1/Projects/WaterGun/loop.mp4"  # Video file path
     
