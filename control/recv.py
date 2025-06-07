@@ -4,6 +4,7 @@ import numpy as np
 import json
 import threading
 import base64
+import time
 from flask import Flask, render_template, Response, request, jsonify
 from flask_socketio import SocketIO, emit
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCDataChannel
@@ -26,24 +27,35 @@ class VideoReceiver:
         self.data_channel = None
         self.latest_frame = None
         self.frame_lock = threading.Lock()
+        self.latest_click = None
+        self.click_lock = threading.Lock()
 
     def handle_click(self, x, y):
-        """Handle click coordinates from web interface"""
-        if self.data_channel and self.data_channel.readyState == "open":
-            try:
-                click_data = {"x": str(x), "y": str(y)}
-                message = json.dumps(click_data)
-                print(f"Sending mouse data: {message}")
-                self.data_channel.send(message)
-            except Exception as e:
-                print(f"Error sending click data: {e}")
-        else:
-            print("Data channel not available or not open")
+        """Store latest click coordinates to be sent from WebRTC thread"""
+        with self.click_lock:
+            self.latest_click = {"x": str(x), "y": str(y)}
+            print(f"Stored latest click at ({x}, {y})")
+
+    def send_latest_click(self):
+        """Send latest click from WebRTC thread context"""
+        if not self.data_channel or self.data_channel.readyState != "open":
+            return
+            
+        with self.click_lock:
+            if self.latest_click:
+                try:
+                    message = json.dumps(self.latest_click)
+                    self.data_channel.send(message)
+                    print(f"Sent latest click: {message}")
+                    # Clear after sending
+                    self.latest_click = None
+                except Exception as e:
+                    print(f"Error sending click data: {e}")
 
     async def handle_track(self, track):
         print("Inside handle track")
         self.track = track
-         
+        
         while True:
             try:
                 frame = await asyncio.wait_for(track.recv(), timeout=1.0)
@@ -59,11 +71,16 @@ class VideoReceiver:
                 with self.frame_lock:
                     self.latest_frame = frame_array.copy()
                 
+                # Send latest click from WebRTC thread context
+                self.send_latest_click()
+                
                 # Emit frame to web clients
                 socketio.emit('video_frame', self.frame_to_base64(frame_array))
                     
             except asyncio.TimeoutError:
                 print("Timeout waiting for frame, continuing...")
+                # Still send latest click even on timeout
+                self.send_latest_click()
             except Exception as e:
                 print(f"Error in handle_track: {e}")
                 break
