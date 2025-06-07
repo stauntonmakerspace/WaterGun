@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Video Receiver</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: white;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .video-container {
+            position: relative;
+            display: inline-block;
+            border: 2px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }
+        
+        #videoStream {
+            display: block;
+            max-width: 100%;
+            height: auto;
+            cursor: crosshair;
+        }
+        
+        .click-indicator {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ff4444;
+            border-radius: 50%;
+            background-color: rgba(255, 68, 68, 0.3);
+            pointer-events: none;
+            animation: pulse 0.5s ease-out;
+            z-index: 10;
+        }
+        
+        @keyframes pulse {
+            0% {
+                transform: scale(0);
+                opacity: 1;
+            }
+            100% {
+                transform: scale(1);
+                opacity: 0;
+            }
+        }
+        
+        .info-panel {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #2a2a2a;
+            border-radius: 8px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            margin-right: 10px;
+        }
+        
+        .status.connected {
+            background-color: #4CAF50;
+            color: white;
+        }
+        
+        .status.disconnected {
+            background-color: #f44336;
+            color: white;
+        }
+        
+        .coordinates {
+            font-family: monospace;
+            font-size: 14px;
+            color: #8bc34a;
+        }
+        
+        .instructions {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #333;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WebRTC Video Receiver</h1>
+            <span id="connectionStatus" class="status disconnected">Disconnected</span>
+        </div>
+        
+        <div class="video-container" id="videoContainer">
+            <img id="videoStream" src="/video_feed" alt="Video Stream">
+        </div>
+        
+        <div class="info-panel">
+            <div class="coordinates">
+                Last click: <span id="lastClick">None</span>
+            </div>
+            
+            <div class="instructions">
+                <strong>Instructions:</strong>
+                <ul>
+                    <li>Click anywhere on the video to send coordinates</li>
+                    <li>Coordinates are sent via WebRTC data channel</li>
+                    <li>Red circles indicate click positions</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO connection
+        const socket = io();
+        
+        let isConnected = false;
+        
+        // Connection status management
+        socket.on('connect', function() {
+            isConnected = true;
+            updateConnectionStatus(true);
+            console.log('Connected to server');
+        });
+        
+        socket.on('disconnect', function() {
+            isConnected = false;
+            updateConnectionStatus(false);
+            console.log('Disconnected from server');
+        });
+        
+        function updateConnectionStatus(connected) {
+            const statusElement = document.getElementById('connectionStatus');
+            if (connected) {
+                statusElement.textContent = 'Connected';
+                statusElement.className = 'status connected';
+            } else {
+                statusElement.textContent = 'Disconnected';
+                statusElement.className = 'status disconnected';
+            }
+        }
+        
+        // Video click handling
+        document.getElementById('videoStream').addEventListener('click', function(event) {
+            const rect = this.getBoundingClientRect();
+            const x = Math.round(event.clientX - rect.left);
+            const y = Math.round(event.clientY - rect.top);
+            
+            console.log(`Clicked at (${x}, ${y})`);
+            
+            // Update display
+            document.getElementById('lastClick').textContent = `(${x}, ${y})`;
+            
+            // Show click indicator
+            showClickIndicator(event.clientX - rect.left, event.clientY - rect.top);
+            
+            // Send coordinates via Socket.IO
+            if (isConnected) {
+                socket.emit('mouse_click', {x: x, y: y});
+            } else {
+                // Fallback to HTTP POST if socket not connected
+                sendClickHTTP(x, y);
+            }
+        });
+        
+        function showClickIndicator(x, y) {
+            const indicator = document.createElement('div');
+            indicator.className = 'click-indicator';
+            indicator.style.left = (x - 10) + 'px';
+            indicator.style.top = (y - 10) + 'px';
+            
+            const container = document.getElementById('videoContainer');
+            container.appendChild(indicator);
+            
+            // Remove indicator after animation
+            setTimeout(() => {
+                if (indicator.parentNode) {
+                    indicator.parentNode.removeChild(indicator);
+                }
+            }, 500);
+        }
+        
+        function sendClickHTTP(x, y) {
+            fetch('/click', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({x: x, y: y})
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Click sent via HTTP:', data);
+            })
+            .catch(error => {
+                console.error('Error sending click:', error);
+            });
+        }
+        
+        // Handle incoming video frames (if using WebSocket streaming)
+        socket.on('video_frame', function(frameData) {
+            // This could be used for WebSocket-based video streaming
+            // Currently using MJPEG stream instead
+        });
+        
+        // Error handling
+        window.addEventListener('error', function(event) {
+            console.error('Error:', event.error);
+        });
+        
+        // Check video stream periodically
+        setInterval(function() {
+            const img = document.getElementById('videoStream');
+            const now = Date.now();
+            img.src = '/video_feed?t=' + now;
+        }, 100); // Refresh every 100ms for smooth playback
+    </script>
+</body>
+</html>
