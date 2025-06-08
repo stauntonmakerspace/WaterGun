@@ -1,4 +1,4 @@
-<!-- Vue.js Frontend with Icons -->
+<!-- Vue.js Frontend for Sprayer Control with Gamepad Support -->
 <template>
   <div class="sprayer-app">
     <!-- Header -->
@@ -22,6 +22,9 @@
           <div class="video-controls" v-if="isConnected && webrtcConnected">
             <span class="resolution-info">{{ frameWidth }}x{{ frameHeight }}</span>
             <span class="stream-status">WebRTC Connected</span>
+            <span v-if="settings.targetingMode === 'gamepad'" class="gamepad-status" :class="{ 'connected': gamepadConnected }">
+              {{ gamepadConnected ? `Gamepad: ${connectedGamepad?.id || 'Connected'}` : 'No Gamepad' }}
+            </span>
           </div>
         </div>
 
@@ -34,82 +37,73 @@
           @mouseup="onMouseUp"
           @mouseleave="onMouseUp"
         >
-          <!-- WebRTC Video Element -->
-          <video
+          <!-- MJPEG Video Stream -->
+          <img
             ref="videoElement"
             class="video-element"
-            v-show="isConnected && webrtcConnected"
-            autoplay
-            playsinline
-            muted
-          ></video>
+            v-show="isConnected"
+            :src="videoStreamUrl"
+            alt="Video Stream"
+            @load="onVideoLoad"
+          />
 
           <!-- No Connection Placeholder -->
-          <div v-if="!isConnected || !webrtcConnected" class="no-connection-placeholder">
+          <div v-if="!isConnected" class="no-connection-placeholder">
             <div class="placeholder-icon">
               <VideoOff size="64" />
             </div>
             <div class="placeholder-text">
-              <h4 v-if="!isConnected">No Device Connection</h4>
-              <h4 v-else-if="!webrtcConnected && connectionStatus.includes('External Browser')">WebRTC Not Supported</h4>
-              <h4 v-else-if="!webrtcConnected">No Video Stream</h4>
-              <p v-if="!isConnected">Connect to device to view live video</p>
-              <p v-else-if="!webrtcConnected && connectionStatus.includes('External Browser')">
-                Open video in browser: <br>
-                <code style="color: #007bff; background: #333; padding: 4px; border-radius: 4px;">
-                  http://{{ settings.deviceAddress }}:{{ settings.videoPort + 1 }}/video
-                </code>
-              </p>
-              <p v-else-if="!webrtcConnected">Waiting for WebRTC video stream...</p>
+              <h4>No Server Connection</h4>
+              <p>Connect to video server to view live stream</p>
             </div>
           </div>
 
-          <!-- Video Overlays (only when connected and video active) -->
-          <div v-if="isConnected && webrtcConnected" class="video-overlays">
+          <!-- Video Overlays (only when connected) -->
+          <div v-if="isConnected" class="video-overlays">
             <!-- Crosshair -->
             <div 
               v-if="showCrosshair"
               class="crosshair"
               :style="crosshairStyle"
-              :class="{ 'firing': isFiring }"
+              :class="{ 'firing': controlState.trigger }"
             ></div>
 
             <!-- Debug Overlay -->
             <div v-if="debugMode" class="debug-overlay">
-              <div class="debug-line">Target: {{ currentTarget.x.toFixed(1) }}%, {{ currentTarget.y.toFixed(1) }}%</div>
+              <div class="debug-line">Pan: {{ controlState.pan.toFixed(1) }}°</div>
+              <div class="debug-line">Tilt: {{ controlState.tilt.toFixed(1) }}°</div>
+              <div class="debug-line">Trigger: {{ controlState.trigger ? 'FIRING' : 'OFF' }}</div>
               <div class="debug-line">Mode: {{ settings.targetingMode }}</div>
-              <div class="debug-line">Firing: {{ isFiring ? 'Yes' : 'No' }}</div>
-              <div class="debug-line">Tracks: {{ trackingData.tracks.length }}</div>
+              <div v-if="settings.targetingMode === 'gamepad'">
+                <div class="debug-line">Gamepad Mode: {{ settings.gamepadMode }}</div>
+                <div class="debug-line">Stick X: {{ gamepadState.leftStick.x.toFixed(2) }}</div>
+                <div class="debug-line">Stick Y: {{ gamepadState.leftStick.y.toFixed(2) }}</div>
+                <div class="debug-line">R Trigger: {{ gamepadState.rightTrigger.toFixed(2) }}</div>
+              </div>
               <div class="debug-line">Frame: {{ frameWidth }}x{{ frameHeight }}</div>
-              <div class="debug-line">WebRTC: {{ webrtcConnected ? 'Connected' : 'Disconnected' }}</div>
+              <div class="debug-line">Connected: {{ isConnected ? 'Yes' : 'No' }}</div>
+              <div class="debug-line">Gamepad: {{ gamepadConnected ? 'Yes' : 'No' }}</div>
             </div>
 
-            <!-- Tracking Boxes (Automatic mode) -->
-            <div 
-              v-for="(track, index) in trackingData.tracks"
-              :key="track.id"
-              class="tracking-box"
-              :class="{ 'selected': index === trackingData.currentTargetIndex }"
-              :style="getTrackingBoxStyle(track)"
-            >
-              <div class="track-label">ID: {{ track.id }}</div>
-            </div>
+            <!-- Center Reference Point -->
+            <div class="center-point"></div>
           </div>
         </div>
 
         <!-- Video Instructions -->
-        <div v-if="isConnected && webrtcConnected" class="video-instructions">
+        <div v-if="isConnected" class="video-instructions">
           <div v-if="settings.targetingMode === 'cursor'" class="instruction">
             <strong>Mouse Control:</strong> 
             Move to aim • {{ settings.firingMode === 'toggle' ? 'Click to toggle firing' : 'Hold to fire' }}
           </div>
           <div v-else-if="settings.targetingMode === 'automatic'" class="instruction">
             <strong>Automatic Mode:</strong> 
-            AI tracking targets • Click to {{ isFiring ? 'stop' : 'start' }} firing
+            AI tracking targets • Click to {{ controlState.trigger ? 'stop' : 'start' }} firing
           </div>
-          <div v-else-if="settings.targetingMode === 'joystick'" class="instruction">
-            <strong>Joystick Mode:</strong> 
-            Left stick to aim • Right trigger to fire
+          <div v-else-if="settings.targetingMode === 'gamepad'" class="instruction">
+            <strong>Gamepad Control:</strong> 
+            Left stick to aim ({{ settings.gamepadMode }}) • Right trigger to fire
+            <span v-if="!gamepadConnected" class="warning"> • No gamepad detected</span>
           </div>
         </div>
       </section>
@@ -118,18 +112,18 @@
       <aside class="control-panel">
         <h3 class="panel-title"><Settings class="section-icon" /> Control Panel</h3>
 
-        <!-- Connection Section (Always Visible) -->
+        <!-- Connection Section -->
         <div class="panel-section">
           <h4 class="section-title">Connection</h4>
           
           <div class="form-group">
-            <label>Device Address:</label>
+            <label>Server Address:</label>
             <input 
               type="text" 
-              v-model="settings.deviceAddress"
+              v-model="settings.serverAddress"
               class="input-field"
               :disabled="isConnecting"
-              placeholder="127.0.0.1"
+              placeholder="localhost:5000"
             />
           </div>
           
@@ -138,9 +132,9 @@
           </div>
           
           <button 
-            @click="refreshConnection"
+            @click="connect"
             class="button primary"
-            :disabled="isConnecting"
+            :disabled="isConnecting || isConnected"
           >
             <Wifi class="button-icon" />
             {{ isConnecting ? 'Connecting...' : 'Connect' }}
@@ -195,11 +189,11 @@
               <label class="radio-label">
                 <input 
                   type="radio" 
-                  value="joystick" 
+                  value="gamepad" 
                   v-model="settings.targetingMode"
                   @change="onTargetingModeChange"
                 />
-                <span><Gamepad2 class="radio-icon" /> Joystick</span>
+                <span><Gamepad2 class="radio-icon" /> Gamepad</span>
               </label>
             </div>
           </div>
@@ -213,7 +207,6 @@
                   type="radio" 
                   value="toggle" 
                   v-model="settings.firingMode"
-                  @change="onSettingsChange"
                 />
                 <span>Toggle</span>
               </label>
@@ -222,51 +215,139 @@
                   type="radio" 
                   value="hold" 
                   v-model="settings.firingMode"
-                  @change="onSettingsChange"
                 />
                 <span>Hold to Fire</span>
               </label>
             </div>
           </div>
 
-          <!-- Target Hold Time (Automatic only) -->
-          <div v-if="settings.targetingMode === 'automatic'" class="panel-section">
-            <h4 class="section-title">Target Hold Time</h4>
-            <div class="slider-container">
-              <input 
-                type="range" 
-                min="1" 
-                max="10" 
-                step="0.5"
-                v-model.number="settings.targetHoldTime"
-                @input="onSettingsChange"
-                class="slider"
-              />
-              <span class="slider-value">{{ settings.targetHoldTime }}s</span>
+          <!-- Gamepad Mode (Gamepad only) -->
+          <div v-if="settings.targetingMode === 'gamepad'" class="panel-section">
+            <h4 class="section-title">Gamepad Mode</h4>
+            <div class="radio-group">
+              <label class="radio-label">
+                <input 
+                  type="radio" 
+                  value="follow" 
+                  v-model="settings.gamepadMode"
+                />
+                <span><Move class="radio-icon" /> Follow (Position)</span>
+              </label>
+              <label class="radio-label">
+                <input 
+                  type="radio" 
+                  value="drag" 
+                  v-model="settings.gamepadMode"
+                />
+                <span><Navigation class="radio-icon" /> Drag (Velocity)</span>
+              </label>
+            </div>
+            <div class="mode-description">
+              <p v-if="settings.gamepadMode === 'follow'">
+                <strong>Follow Mode:</strong> Crosshair position directly matches stick position
+              </p>
+              <p v-if="settings.gamepadMode === 'drag'">
+                <strong>Drag Mode:</strong> Stick controls movement speed and direction
+              </p>
             </div>
           </div>
 
-          <!-- Gamepad Status (Joystick only) -->
-          <div v-if="settings.targetingMode === 'joystick'" class="panel-section">
-            <h4 class="section-title">Gamepad</h4>
-            <div class="gamepad-status" :class="gamepadStatusClass">
-              <div class="status-indicator">
-                <span class="status-dot"></span>
-                {{ gamepadStatus }}
+          <!-- Gamepad Settings (Gamepad only) -->
+          <div v-if="settings.targetingMode === 'gamepad'" class="panel-section">
+            <h4 class="section-title">Gamepad Settings</h4>
+            
+            <!-- Gamepad Status -->
+            <div class="gamepad-status-section">
+              <div class="gamepad-info" :class="{ 'connected': gamepadConnected }">
+                <Gamepad2 class="gamepad-icon" />
+                <span v-if="gamepadConnected">{{ connectedGamepad?.id || 'Gamepad Connected' }}</span>
+                <span v-else>No Gamepad Detected</span>
               </div>
-              <p v-if="!gamepadConnected" class="gamepad-help">
-                Connect a gamepad and press any button to activate it.
-              </p>
+              <button @click="detectGamepad" class="button secondary small">
+                <RefreshCw class="button-icon" />
+                Detect
+              </button>
+            </div>
+
+            <!-- Dead Zone -->
+            <div class="slider-container">
+              <label>Dead Zone:</label>
+              <input 
+                type="range" 
+                min="0.05" 
+                max="0.3" 
+                step="0.01"
+                v-model.number="settings.gamepadDeadZone"
+                class="slider"
+              />
+              <span class="slider-value">{{ (settings.gamepadDeadZone * 100).toFixed(0) }}%</span>
+            </div>
+
+            <!-- Trigger Threshold -->
+            <div class="slider-container">
+              <label>Fire Threshold:</label>
+              <input 
+                type="range" 
+                min="0.1" 
+                max="0.9" 
+                step="0.05"
+                v-model.number="settings.gamepadTriggerThreshold"
+                class="slider"
+              />
+              <span class="slider-value">{{ (settings.gamepadTriggerThreshold * 100).toFixed(0) }}%</span>
+            </div>
+
+            <!-- Drag Mode Speed (only in drag mode) -->
+            <div v-if="settings.gamepadMode === 'drag'" class="slider-container">
+              <label>Drag Speed:</label>
+              <input 
+                type="range" 
+                min="0.5" 
+                max="3.0" 
+                step="0.1"
+                v-model.number="settings.gamepadDragSpeed"
+                class="slider"
+              />
+              <span class="slider-value">{{ settings.gamepadDragSpeed.toFixed(1) }}x</span>
+            </div>
+          </div>
+
+          <!-- Pan/Tilt Sensitivity (Non-gamepad modes) -->
+          <div v-if="settings.targetingMode !== 'gamepad'" class="panel-section">
+            <h4 class="section-title">Pan/Tilt Sensitivity</h4>
+            <div class="slider-container">
+              <label>Pan:</label>
+              <input 
+                type="range" 
+                min="0.1" 
+                max="2.0" 
+                step="0.1"
+                v-model.number="settings.panSensitivity"
+                class="slider"
+              />
+              <span class="slider-value">{{ settings.panSensitivity }}x</span>
+            </div>
+            <div class="slider-container">
+              <label>Tilt:</label>
+              <input 
+                type="range" 
+                min="0.1" 
+                max="2.0" 
+                step="0.1"
+                v-model.number="settings.tiltSensitivity"
+                class="slider"
+              />
+              <span class="slider-value">{{ settings.tiltSensitivity }}x</span>
             </div>
           </div>
 
           <!-- Firing Control -->
           <div class="panel-section">
             <h4 class="section-title">Firing Control</h4>
-            <div class="firing-status" :class="{ 'active': isFiring }">
+            <div class="firing-status" :class="{ 'active': controlState.trigger }">
               <div class="firing-indicator">
                 <span class="firing-dot"></span>
-                {{ isFiring ? 'FIRING' : 'READY' }}
+                {{ controlState.trigger ? 'FIRING' : 'READY' }}
               </div>
             </div>
             
@@ -274,20 +355,20 @@
               v-if="settings.targetingMode === 'automatic'"
               @click="toggleFiring"
               class="button"
-              :class="{ 'danger': isFiring }"
+              :class="{ 'danger': controlState.trigger }"
             >
-              <Zap v-if="isFiring" class="button-icon" />
+              <Zap v-if="controlState.trigger" class="button-icon" />
               <Play v-else class="button-icon" />
-              {{ isFiring ? 'Stop Firing' : 'Start Firing' }}
+              {{ controlState.trigger ? 'Stop Firing' : 'Start Firing' }}
             </button>
           </div>
 
           <!-- System Actions -->
           <div class="panel-section">
             <h4 class="section-title">System</h4>
-            <button @click="loadCalibration" class="button">
+            <button @click="centerPosition" class="button">
               <Compass class="button-icon" />
-              Load Calibration
+              Center Position
             </button>
             <button @click="saveSettings" class="button">
               <Save class="button-icon" />
@@ -307,18 +388,15 @@
             <Cable size="48" />
           </div>
           <h4>Connection Required</h4>
-          <p>Connect to the sprayer to access control features</p>
+          <p>Connect to the video server to access control features</p>
         </div>
       </aside>
     </main>
   </div>
 </template>
 
-<script setup lang="ts">
+<script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { listen } from '@tauri-apps/api/event'
-import { useGamepad, mapGamepadToXbox360Controller } from '@vueuse/core'
-import { invoke } from '@tauri-apps/api/core'
 
 // Import Lucide icons
 import { 
@@ -330,77 +408,65 @@ import {
   WifiOff, 
   Play, 
   Mouse, 
-  Gamepad2, 
   Zap, 
   Compass, 
   Save, 
   RotateCcw, 
-  Cable 
+  Cable,
+  Gamepad2,
+  Move,
+  Navigation,
+  RefreshCw
 } from 'lucide-vue-next'
 
-// Types
-interface Settings {
-  targetingMode: 'automatic' | 'cursor' | 'joystick'
-  firingMode: 'toggle' | 'hold'
-  targetHoldTime: number
-  deviceAddress: string
-  devicePort: number
-  videoPort: number
-}
-
-interface TrackingData {
-  tracks: Array<{
-    id: number
-    x1: number
-    y1: number
-    x2: number
-    y2: number
-    confidence: number
-  }>
-  currentTargetIndex: number
-}
-
-// Reactive State
-const settings = ref<Settings>({
+// Types and Reactive State
+const settings = ref({
   targetingMode: 'cursor',
   firingMode: 'toggle',
-  targetHoldTime: 5.0,
-  deviceAddress: '127.0.0.1', // Default to localhost for testing
-  devicePort: 5632,
-  videoPort: 8080
+  gamepadMode: 'follow', // 'follow' or 'drag'
+  serverAddress: 'localhost:5000',
+  panSensitivity: 1.0,
+  tiltSensitivity: 1.0,
+  gamepadDeadZone: 0.15,
+  gamepadTriggerThreshold: 0.3,
+  gamepadDragSpeed: 1.5
 })
 
-const debugMode = ref(false) // UI-only feature
+const debugMode = ref(false)
 const connectionStatus = ref('Disconnected')
 const isConnecting = ref(false)
-const currentTarget = ref({ x: 50, y: 50 }) // Percentages 0-100
-const isFiring = ref(false)
-const gamepadStatus = ref('No gamepad detected')
-const gamepadConnected = ref(false)
 
-const trackingData = ref<TrackingData>({
-  tracks: [],
-  currentTargetIndex: 0
+// Control state (pan/tilt in degrees, trigger boolean)
+const controlState = ref({
+  pan: 0,    // degrees from center (-90 to +90)
+  tilt: 0,   // degrees from center (-45 to +45)  
+  trigger: false
 })
 
 // Video display refs
-const videoContainer = ref<HTMLDivElement>()
-const videoElement = ref<HTMLVideoElement>()
+const videoContainer = ref(null)
+const videoElement = ref(null)
 const frameWidth = ref(800)
 const frameHeight = ref(600)
 
-// WebRTC
-const webrtcConnection = ref<RTCPeerConnection | null>(null)
+// WebSocket for real-time communication
+let socket = null
 const webrtcConnected = ref(false)
 
-// Gamepad support
-const { isSupported: gamepadSupported, gamepads, onConnected, onDisconnected } = useGamepad()
-const gamepad = computed(() => gamepads.value.find(g => g?.mapping === 'standard'))
-const controller = computed(() => gamepad.value ? mapGamepadToXbox360Controller(gamepad.value) : null)
+// Mouse state
+const mousePosition = ref({ x: 50, y: 50 }) // percentage from center
+let isMouseDown = false
 
-// Gamepad state for continuous movement
-const gamepadTarget = ref({ x: 50, y: 50 }) // Start at center position (percentages)
-let gamepadInterval: number | null = null
+// Gamepad state
+const gamepadConnected = ref(false)
+const connectedGamepad = ref(null)
+const gamepadState = ref({
+  leftStick: { x: 0, y: 0 },
+  rightTrigger: 0,
+  lastUpdate: 0
+})
+
+let gamepadAnimationFrame = null
 
 // Computed Properties
 const isConnected = computed(() => connectionStatus.value === 'Connected')
@@ -412,374 +478,316 @@ const connectionStatusClass = computed(() => ({
   'status-error': connectionStatus.value.includes('failed') || connectionStatus.value.includes('error')
 }))
 
-const gamepadStatusClass = computed(() => ({
-  'gamepad-connected': gamepadConnected.value,
-  'gamepad-disconnected': !gamepadConnected.value
-}))
-
-// Update gamepad status based on VueUse
-watch(gamepad, (newGamepad) => {
-  if (newGamepad) {
-    gamepadConnected.value = true
-    gamepadStatus.value = `Connected: ${newGamepad.id || 'Unknown Controller'}`
-  } else {
-    gamepadConnected.value = false
-    gamepadStatus.value = 'No gamepad detected'
-  }
+const videoStreamUrl = computed(() => {
+  if (!isConnected.value) return ''
+  return `http://${settings.value.serverAddress}/video_feed?t=${Date.now()}`
 })
 
 const showCrosshair = computed(() => 
-  isConnected.value && webrtcConnected.value && (
-    settings.value.targetingMode === 'cursor' || 
-    (settings.value.targetingMode === 'automatic' && trackingData.value.tracks.length > 0)
-  )
+  isConnected.value && (settings.value.targetingMode === 'cursor' || settings.value.targetingMode === 'gamepad')
 )
 
 const crosshairStyle = computed(() => {
-  // Convert percentage to pixel coordinates based on actual video element size
-  if (!videoElement.value) return { left: '50%', top: '50%' }
-  
-  const rect = videoElement.value.getBoundingClientRect()
-  const x = (currentTarget.value.x / 100) * rect.width
-  const y = (currentTarget.value.y / 100) * rect.height
+  // Convert pan/tilt to screen position
+  // Pan: -90 to +90 degrees -> 0 to 100% screen width
+  // Tilt: -45 to +45 degrees -> 0 to 100% screen height
+  const xPercent = ((controlState.value.pan + 90) / 180) * 100
+  const yPercent = ((controlState.value.tilt + 45) / 90) * 100
   
   return {
-    left: `${x}px`,
-    top: `${y}px`,
+    left: `${Math.max(0, Math.min(100, xPercent))}%`,
+    top: `${Math.max(0, Math.min(100, yPercent))}%`,
     transform: 'translate(-50%, -50%)'
   }
 })
 
-// Methods - Direct device connection
-const refreshConnection = async () => {
+// Gamepad Functions
+const detectGamepad = () => {
+  const gamepads = navigator.getGamepads()
+  for (let i = 0; i < gamepads.length; i++) {
+    if (gamepads[i]) {
+      connectedGamepad.value = gamepads[i]
+      gamepadConnected.value = true
+      console.log('Gamepad detected:', gamepads[i].id)
+      return
+    }
+  }
+  gamepadConnected.value = false
+  connectedGamepad.value = null
+}
+
+const applyDeadZone = (value, deadZone) => {
+  if (Math.abs(value) < deadZone) {
+    return 0
+  }
+  // Scale the value to maintain full range after dead zone
+  const sign = Math.sign(value)
+  const scaledValue = (Math.abs(value) - deadZone) / (1 - deadZone)
+  return sign * scaledValue
+}
+
+const updateGamepadState = () => {
+  if (!gamepadConnected.value) {
+    detectGamepad()
+    if (!gamepadConnected.value) {
+      gamepadAnimationFrame = requestAnimationFrame(updateGamepadState)
+      return
+    }
+  }
+
+  const gamepad = navigator.getGamepads()[connectedGamepad.value?.index]
+  if (!gamepad) {
+    gamepadConnected.value = false
+    connectedGamepad.value = null
+    gamepadAnimationFrame = requestAnimationFrame(updateGamepadState)
+    return
+  }
+
+  // Read left stick (axes 0 and 1)
+  const rawX = gamepad.axes[0] || 0
+  const rawY = gamepad.axes[1] || 0
+  
+  // Apply dead zone
+  const stickX = applyDeadZone(rawX, settings.value.gamepadDeadZone)
+  const stickY = applyDeadZone(rawY, settings.value.gamepadDeadZone)
+  
+  // Read right trigger (varies by gamepad, try button 7 then axes 5)
+  let triggerValue = 0
+  if (gamepad.buttons[7]) {
+    triggerValue = gamepad.buttons[7].value
+  } else if (gamepad.axes[5] !== undefined) {
+    // Convert from -1 to 1 range to 0 to 1 range
+    triggerValue = (gamepad.axes[5] + 1) / 2
+  }
+
+  // Update gamepad state
+  gamepadState.value.leftStick.x = stickX
+  gamepadState.value.leftStick.y = stickY
+  gamepadState.value.rightTrigger = triggerValue
+  gamepadState.value.lastUpdate = Date.now()
+
+  // Handle gamepad input if in gamepad mode
+  if (settings.value.targetingMode === 'gamepad' && isConnected.value) {
+    handleGamepadInput(stickX, stickY, triggerValue)
+  }
+
+  gamepadAnimationFrame = requestAnimationFrame(updateGamepadState)
+}
+
+const handleGamepadInput = (stickX, stickY, triggerValue) => {
+  if (settings.value.gamepadMode === 'follow') {
+    // Follow mode: directly map stick position to pan/tilt
+    controlState.value.pan = stickX * 90 // -90 to +90 degrees
+    controlState.value.tilt = stickY * 45 // -45 to +45 degrees
+  } else if (settings.value.gamepadMode === 'drag') {
+    // Drag mode: stick controls velocity
+    const deltaTime = 16 / 1000 // Assume ~60fps for smooth movement
+    const speed = settings.value.gamepadDragSpeed
+    
+    // Calculate velocity in degrees per second
+    const panVelocity = stickX * 90 * speed // max 90 deg/sec * speed multiplier
+    const tiltVelocity = stickY * 45 * speed // max 45 deg/sec * speed multiplier
+    
+    // Update position based on velocity
+    controlState.value.pan += panVelocity * deltaTime
+    controlState.value.tilt += tiltVelocity * deltaTime
+    
+    // Clamp to valid ranges
+    controlState.value.pan = Math.max(-90, Math.min(90, controlState.value.pan))
+    controlState.value.tilt = Math.max(-45, Math.min(45, controlState.value.tilt))
+  }
+
+  // Handle trigger for firing
+  const shouldFire = triggerValue > settings.value.gamepadTriggerThreshold
+  if (shouldFire !== controlState.value.trigger) {
+    controlState.value.trigger = shouldFire
+  }
+
+  sendControlUpdate()
+}
+
+// Methods
+const connect = async () => {
   isConnecting.value = true
   connectionStatus.value = 'Connecting...'
   
   try {
-    // Connect UDP socket for commands
-    const result = await invoke('connect_to_device', {
-      address: settings.value.deviceAddress,
-      port: settings.value.devicePort
-    })
-    
-    if (result === 'Connected') {
+    // Test connection with a simple HTTP request first
+    const response = await fetch(`http://${settings.value.serverAddress}/`)
+    if (response.ok) {
       connectionStatus.value = 'Connected'
+      setupWebSocket()
+      // Set a timer to refresh video stream
+      startVideoRefresh()
       
-      // Setup WebRTC connection directly to device
-      await setupDeviceWebRTC()
+      // Start gamepad polling if in gamepad mode
+      if (settings.value.targetingMode === 'gamepad') {
+        startGamepadPolling()
+      }
     } else {
-      connectionStatus.value = result as string
+      connectionStatus.value = 'Connection failed'
     }
   } catch (error) {
-    connectionStatus.value = `Connection failed: ${error}`
+    connectionStatus.value = `Connection failed: ${error.message}`
   } finally {
     isConnecting.value = false
   }
 }
 
-const setupDeviceWebRTC = async () => {
-  try {
-    console.log('🔗 Connecting to device WebRTC...')
-    
-    // Create peer connection
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    })
-    
-    // Handle incoming video stream
-    pc.ontrack = (event) => {
-      console.log('📺 Received video from device')
-      if (videoElement.value && event.streams[0]) {
-        videoElement.value.srcObject = event.streams[0]
-        videoElement.value.play().catch(e => console.warn('Video play failed:', e))
-        
-        // Get actual video dimensions and update frame size dynamically
-        videoElement.value.onloadedmetadata = () => {
-          const video = videoElement.value!
-          frameWidth.value = video.videoWidth
-          frameHeight.value = video.videoHeight
-          
-          // Notify backend of frame dimensions for coordinate transformation
-          invoke('set_frame_dimensions', {
-            width: video.videoWidth,
-            height: video.videoHeight
-          }).catch(console.error)
-          
-          console.log(`✅ Video stream: ${video.videoWidth}x${video.videoHeight}`)
-        }
-        
-        webrtcConnected.value = true
-      }
-    }
-    
-    // Handle connection state
-    pc.onconnectionstatechange = () => {
-      console.log(`🔄 Device WebRTC state: ${pc.connectionState}`)
-      webrtcConnected.value = pc.connectionState === 'connected'
-      
-      if (pc.connectionState === 'failed') {
-        console.log('❌ Device WebRTC connection failed')
-        webrtcConnected.value = false
-      }
-    }
-    
-    // Connect to device's WebRTC signaling server using configured port
-    const signalingUrl = `ws://${settings.value.deviceAddress}:${settings.value.videoPort}/websocket`
-    await connectToDeviceSignaling(pc, signalingUrl)
-    
-    webrtcConnection.value = pc
-    
-  } catch (error) {
-    console.error('❌ Device WebRTC setup failed:', error)
+const setupWebSocket = () => {
+  const wsUrl = `ws://${settings.value.serverAddress.replace('http://', '')}/socket.io/`
+  socket = io(`http://${settings.value.serverAddress}`)
+  
+  socket.on('connect', () => {
+    console.log('WebSocket connected')
+    webrtcConnected.value = true
+  })
+  
+  socket.on('disconnect', () => {
+    console.log('WebSocket disconnected')
     webrtcConnected.value = false
-  }
-}
-
-const connectToDeviceSignaling = async (pc: RTCPeerConnection, url: string) => {
-  return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(url)
-    
-    ws.onopen = () => {
-      console.log('📡 Connected to device signaling server')
-      
-      // Request video stream from device
-      ws.send(JSON.stringify({
-        type: 'request_stream',
-        client_id: 'sprayer_controller'
-      }))
-    }
-    
-    ws.onmessage = async (event) => {
-      try {
-        const message = JSON.parse(event.data)
-        
-        switch (message.type) {
-          case 'offer':
-            await pc.setRemoteDescription(message.offer)
-            const answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
-            
-            ws.send(JSON.stringify({
-              type: 'answer',
-              answer: answer
-            }))
-            break
-            
-          case 'ice-candidate':
-            if (message.candidate) {
-              await pc.addIceCandidate(message.candidate)
-            }
-            break
-            
-          case 'stream_ready':
-            console.log('✅ Device stream ready')
-            resolve()
-            break
-        }
-      } catch (error) {
-        console.error('Signaling error:', error)
-        reject(error)
-      }
-    }
-    
-    // Handle ICE candidates from our side
-    pc.onicecandidate = (event) => {
-      if (event.candidate && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'ice-candidate',
-          candidate: event.candidate
-        }))
-      }
-    }
-    
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
-      reject(error)
-    }
-    
-    ws.onclose = () => {
-      console.log('📡 Signaling connection closed')
-    }
+  })
+  
+  socket.on('video_frame', (frameData) => {
+    // Handle real-time video frames if needed
   })
 }
 
-const disconnect = async () => {
-  try {
-    await invoke('cleanup_resources')
-    connectionStatus.value = 'Disconnected'
-    isFiring.value = false
-    webrtcConnected.value = false
-    
-    // Close WebRTC
-    if (webrtcConnection.value) {
-      webrtcConnection.value.close()
-      webrtcConnection.value = null
-    }
-  } catch (error) {
-    console.error('Disconnect error:', error)
+const disconnect = () => {
+  if (socket) {
+    socket.disconnect()
+    socket = null
   }
+  connectionStatus.value = 'Disconnected'
+  webrtcConnected.value = false
+  controlState.value.trigger = false
+  stopVideoRefresh()
+  stopGamepadPolling()
 }
 
-const onMouseMove = (event: MouseEvent) => {
+const onMouseMove = (event) => {
   if (!isConnected.value || settings.value.targetingMode !== 'cursor') return
   
-  const rect = videoElement.value?.getBoundingClientRect()
-  if (!rect) return
-  
+  const rect = videoContainer.value.getBoundingClientRect()
   const x = event.clientX - rect.left
   const y = event.clientY - rect.top
   
-  // Convert pixel coordinates to percentages
-  const xPercent = Math.max(0, Math.min(100, (x / rect.width) * 100))
-  const yPercent = Math.max(0, Math.min(100, (y / rect.height) * 100))
+  // Convert pixel coordinates to percentages relative to center
+  const xPercent = (x / rect.width) * 100
+  const yPercent = (y / rect.height) * 100
   
-  currentTarget.value = { x: xPercent, y: yPercent }
-  updateTargeting()
+  mousePosition.value = { x: xPercent, y: yPercent }
+  
+  // Convert to pan/tilt angles
+  // X: 0-100% -> -90 to +90 degrees
+  // Y: 0-100% -> -45 to +45 degrees
+  const pan = ((xPercent - 50) / 50) * 90 * settings.value.panSensitivity
+  const tilt = ((yPercent - 50) / 50) * 45 * settings.value.tiltSensitivity
+  
+  controlState.value.pan = Math.max(-90, Math.min(90, pan))
+  controlState.value.tilt = Math.max(-45, Math.min(45, tilt))
+  
+  sendControlUpdate()
 }
 
 const onMouseDown = () => {
   if (!isConnected.value || settings.value.targetingMode !== 'cursor') return
   
+  isMouseDown = true
+  
   if (settings.value.firingMode === 'toggle') {
-    isFiring.value = !isFiring.value
+    controlState.value.trigger = !controlState.value.trigger
   } else if (settings.value.firingMode === 'hold') {
-    isFiring.value = true
+    controlState.value.trigger = true
   }
   
-  updateTargeting()
+  sendControlUpdate()
 }
 
 const onMouseUp = () => {
   if (!isConnected.value || settings.value.targetingMode !== 'cursor') return
   
+  isMouseDown = false
+  
   if (settings.value.firingMode === 'hold') {
-    isFiring.value = false
-    updateTargeting()
+    controlState.value.trigger = false
+    sendControlUpdate()
   }
 }
 
 const toggleFiring = () => {
-  isFiring.value = !isFiring.value
-  updateTargeting()
+  controlState.value.trigger = !controlState.value.trigger
+  sendControlUpdate()
 }
 
-const updateTargeting = async () => {
-  try {
-    await invoke('update_targeting', {
-      target: currentTarget.value,
-      isFiring: isFiring.value,
-      mode: settings.value.targetingMode
-    })
-  } catch (error) {
-    console.error('Failed to update targeting:', error)
+const sendControlUpdate = async () => {
+  if (!isConnected.value) return
+  
+  const payload = {
+    pan: controlState.value.pan,
+    tilt: controlState.value.tilt,
+    trigger: controlState.value.trigger,
+    mode: settings.value.targetingMode
   }
-}
-
-const onSettingsChange = async () => {
+  
   try {
-    await invoke('update_settings', { 
-      settings: {
-        targeting_mode: settings.value.targetingMode,
-        firing_mode: settings.value.firingMode,
-        target_hold_time: settings.value.targetHoldTime,
-        device_address: settings.value.deviceAddress,
-        device_port: settings.value.devicePort,
-        video_port: settings.value.videoPort
-      }
-    })
+    // Send via WebSocket if available
+    if (socket && socket.connected) {
+      socket.emit('control_update', payload)
+    } else {
+      // Fallback to HTTP
+      await fetch(`http://${settings.value.serverAddress}/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+    }
   } catch (error) {
-    console.error('Failed to update settings:', error)
+    console.error('Failed to send control update:', error)
   }
 }
 
 const onTargetingModeChange = () => {
   // Reset firing state when changing modes
-  isFiring.value = false
-  onSettingsChange()
+  controlState.value.trigger = false
   
-  // Handle gamepad processing based on mode
-  if (settings.value.targetingMode === 'joystick') {
-    startGamepadProcessing()
+  // Start or stop gamepad polling based on mode
+  if (settings.value.targetingMode === 'gamepad') {
+    startGamepadPolling()
   } else {
-    stopGamepadProcessing()
+    stopGamepadPolling()
+  }
+  
+  sendControlUpdate()
+}
+
+const startGamepadPolling = () => {
+  if (!gamepadAnimationFrame) {
+    detectGamepad()
+    gamepadAnimationFrame = requestAnimationFrame(updateGamepadState)
   }
 }
 
-// Gamepad processing
-const startGamepadProcessing = () => {
-  if (gamepadInterval) return
-  
-  gamepadInterval = setInterval(() => {
-    if (settings.value.targetingMode === 'joystick' && controller.value) {
-      processGamepadInput()
-    }
-  }, 16) // ~60 FPS
-}
-
-const stopGamepadProcessing = () => {
-  if (gamepadInterval) {
-    clearInterval(gamepadInterval)
-    gamepadInterval = null
+const stopGamepadPolling = () => {
+  if (gamepadAnimationFrame) {
+    cancelAnimationFrame(gamepadAnimationFrame)
+    gamepadAnimationFrame = null
   }
 }
 
-const processGamepadInput = () => {
-  if (!controller.value) return
-  
-  const leftStick = controller.value.axes.leftStick
-  const rightTrigger = controller.value.triggers.right
-  
-  // Process stick movement (similar to original Python logic)
-  const deadzone = 0.75
-  const moveSpeed = 5 // Percentage per frame
-  
-  if (Math.abs(leftStick.x) > deadzone) {
-    gamepadTarget.value.x += leftStick.x > 0 ? moveSpeed : -moveSpeed
-  }
-  
-  if (Math.abs(leftStick.y) > deadzone) {
-    gamepadTarget.value.y += leftStick.y > 0 ? moveSpeed : -moveSpeed
-  }
-  
-  // Clamp values to 0-100 percentage range
-  gamepadTarget.value.x = Math.max(0, Math.min(100, gamepadTarget.value.x))
-  gamepadTarget.value.y = Math.max(0, Math.min(100, gamepadTarget.value.y))
-  
-  // Update current target
-  const wasFiring = isFiring.value
-  currentTarget.value = { ...gamepadTarget.value }
-  
-  // Handle firing (right trigger)
-  isFiring.value = rightTrigger.value > 0.5
-  
-  // Send update if target or firing state changed
-  if (wasFiring !== isFiring.value || 
-      Math.abs(currentTarget.value.x - gamepadTarget.value.x) > 0.1 || 
-      Math.abs(currentTarget.value.y - gamepadTarget.value.y) > 0.1) {
-    updateTargeting()
-  }
-}
-
-const loadCalibration = async () => {
-  try {
-    await invoke('load_calibration_file')
-    console.log('Calibration loaded successfully')
-  } catch (error) {
-    console.error('Failed to load calibration:', error)
-  }
+const centerPosition = () => {
+  controlState.value.pan = 0
+  controlState.value.tilt = 0
+  controlState.value.trigger = false
+  sendControlUpdate()
 }
 
 const saveSettings = async () => {
   try {
-    await invoke('save_settings', { 
-      settings: {
-        targeting_mode: settings.value.targetingMode,
-        firing_mode: settings.value.firingMode,
-        target_hold_time: settings.value.targetHoldTime,
-        device_address: settings.value.deviceAddress,
-        device_port: settings.value.devicePort,
-        video_port: settings.value.videoPort
-      }
+    await fetch(`http://${settings.value.serverAddress}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings.value)
     })
     console.log('Settings saved successfully')
   } catch (error) {
@@ -791,76 +799,96 @@ const resetSettings = () => {
   settings.value = {
     targetingMode: 'cursor',
     firingMode: 'toggle',
-    targetHoldTime: 5.0,
-    deviceAddress: '127.0.0.1',
-    devicePort: 5632,
-    videoPort: 8080
+    gamepadMode: 'follow',
+    serverAddress: 'localhost:5000',
+    panSensitivity: 1.0,
+    tiltSensitivity: 1.0,
+    gamepadDeadZone: 0.15,
+    gamepadTriggerThreshold: 0.3,
+    gamepadDragSpeed: 1.5
   }
   debugMode.value = false
-  onSettingsChange()
+  centerPosition()
 }
 
-const getTrackingBoxStyle = (track: any) => {
-  // Convert absolute pixel coordinates to percentages for display
-  const xPercent = (track.x1 / frameWidth.value) * 100
-  const yPercent = (track.y1 / frameHeight.value) * 100
-  const widthPercent = ((track.x2 - track.x1) / frameWidth.value) * 100
-  const heightPercent = ((track.y2 - track.y1) / frameHeight.value) * 100
+const onVideoLoad = () => {
+  if (videoElement.value) {
+    frameWidth.value = videoElement.value.naturalWidth || 800
+    frameHeight.value = videoElement.value.naturalHeight || 600
+  }
+}
+
+// Video refresh for MJPEG stream
+let videoRefreshInterval = null
+
+const startVideoRefresh = () => {
+  if (videoRefreshInterval) return
   
-  return {
-    left: `${xPercent}%`,
-    top: `${yPercent}%`,
-    width: `${widthPercent}%`,
-    height: `${heightPercent}%`
+  videoRefreshInterval = setInterval(() => {
+    if (videoElement.value && isConnected.value) {
+      const timestamp = Date.now()
+      videoElement.value.src = `http://${settings.value.serverAddress}/video_feed?t=${timestamp}`
+    }
+  }, 100) // 10 FPS refresh
+}
+
+const stopVideoRefresh = () => {
+  if (videoRefreshInterval) {
+    clearInterval(videoRefreshInterval)
+    videoRefreshInterval = null
+  }
+}
+
+// Gamepad event listeners
+const onGamepadConnected = (event) => {
+  console.log('Gamepad connected:', event.gamepad.id)
+  detectGamepad()
+}
+
+const onGamepadDisconnected = (event) => {
+  console.log('Gamepad disconnected:', event.gamepad.id)
+  if (connectedGamepad.value?.index === event.gamepad.index) {
+    gamepadConnected.value = false
+    connectedGamepad.value = null
   }
 }
 
 // Lifecycle
-onMounted(async () => {
+onMounted(() => {
   console.log('Sprayer Control App mounted')
   
-  // Setup gamepad event listeners
-  if (gamepadSupported.value) {
-    onConnected((index) => {
-      const gamepadInfo = gamepads.value[index]
-      gamepadConnected.value = true
-      gamepadStatus.value = `Connected: ${gamepadInfo?.id || 'Unknown Controller'}`
-      console.log(`Gamepad connected: ${gamepadInfo?.id}`)
-    })
-    
-    onDisconnected((index) => {
-      gamepadConnected.value = false
-      gamepadStatus.value = 'No gamepad detected'
-      console.log(`Gamepad ${index} disconnected`)
-    })
-  }
-  
-  // Listen for tracking updates (automatic mode only)
-  listen('tracking-update', (event: any) => {
-    const data = event.payload
-    trackingData.value = data
-    
-    // Update current target for automatic mode
-    if (settings.value.targetingMode === 'automatic' && data.tracks.length > 0) {
-      const selectedTrack = data.tracks[data.currentTargetIndex]
-      if (selectedTrack) {
-        // Convert bottom center of selected track to percentage coordinates
-        const centerX = (selectedTrack.x1 + selectedTrack.x2) / 2
-        const bottomY = selectedTrack.y2
-        
-        currentTarget.value = {
-          x: (centerX / frameWidth.value) * 100,
-          y: (bottomY / frameHeight.value) * 100
-        }
-      }
+  // Load settings from localStorage if available
+  const savedSettings = localStorage.getItem('sprayerSettings')
+  if (savedSettings) {
+    try {
+      settings.value = { ...settings.value, ...JSON.parse(savedSettings) }
+    } catch (e) {
+      console.warn('Failed to load saved settings')
     }
-  })
+  }
+
+  // Add gamepad event listeners
+  window.addEventListener('gamepadconnected', onGamepadConnected)
+  window.addEventListener('gamepaddisconnected', onGamepadDisconnected)
+  
+  // Initial gamepad detection
+  detectGamepad()
 })
 
-onUnmounted(async () => {
-  stopGamepadProcessing()
-  await disconnect()
+onUnmounted(() => {
+  disconnect()
+  stopVideoRefresh()
+  stopGamepadPolling()
+  
+  // Remove gamepad event listeners
+  window.removeEventListener('gamepadconnected', onGamepadConnected)
+  window.removeEventListener('gamepaddisconnected', onGamepadDisconnected)
 })
+
+// Watch settings and save to localStorage
+watch(settings, (newSettings) => {
+  localStorage.setItem('sprayerSettings', JSON.stringify(newSettings))
+}, { deep: true })
 </script>
 
 <style scoped>
@@ -894,13 +922,10 @@ onUnmounted(async () => {
 }
 
 .icon {
-  font-size: 1em;
-  font-weight: bold;
   color: #007bff;
 }
 
 .section-icon {
-  display: inline;
   margin-right: 0.5rem;
   vertical-align: text-bottom;
 }
@@ -991,6 +1016,22 @@ onUnmounted(async () => {
   gap: 1rem;
   font-size: 0.9rem;
   color: #cccccc;
+}
+
+.gamepad-status {
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+}
+
+.gamepad-status.connected {
+  background: #28a745;
+  color: white;
+}
+
+.gamepad-status:not(.connected) {
+  background: #dc3545;
+  color: white;
 }
 
 .video-display {
@@ -1092,6 +1133,18 @@ onUnmounted(async () => {
   100% { opacity: 0.5; }
 }
 
+.center-point {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  background: #00ff00;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+}
+
 .debug-overlay {
   position: absolute;
   top: 10px;
@@ -1109,34 +1162,6 @@ onUnmounted(async () => {
   margin-bottom: 2px;
 }
 
-.tracking-box {
-  position: absolute;
-  border: 2px solid #00ff00;
-  background: transparent;
-  z-index: 15;
-}
-
-.tracking-box.selected {
-  border-color: #ff0000;
-  border-width: 3px;
-}
-
-.track-label {
-  position: absolute;
-  top: -20px;
-  left: 0;
-  background: #00ff00;
-  color: black;
-  padding: 2px 6px;
-  font-size: 10px;
-  border-radius: 2px;
-}
-
-.tracking-box.selected .track-label {
-  background: #ff0000;
-  color: white;
-}
-
 .video-instructions {
   margin-top: 1rem;
   padding: 0.75rem;
@@ -1148,6 +1173,11 @@ onUnmounted(async () => {
 .instruction {
   font-size: 0.9rem;
   color: #cccccc;
+}
+
+.warning {
+  color: #ffc107;
+  font-weight: bold;
 }
 
 /* Control Panel */
@@ -1252,10 +1282,58 @@ onUnmounted(async () => {
   align-items: center;
 }
 
+.mode-description {
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  background: #1a1a1a;
+  border-radius: 4px;
+  border: 1px solid #404040;
+}
+
+.mode-description p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #cccccc;
+}
+
+.gamepad-status-section {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.gamepad-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  padding: 0.5rem;
+  border-radius: 4px;
+  background: #dc3545;
+  color: white;
+  font-size: 0.85rem;
+}
+
+.gamepad-info.connected {
+  background: #28a745;
+}
+
+.gamepad-icon {
+  width: 16px;
+  height: 16px;
+}
+
 .slider-container {
   display: flex;
   align-items: center;
   gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.slider-container label {
+  min-width: 80px;
+  font-size: 0.9rem;
 }
 
 .slider {
@@ -1289,7 +1367,8 @@ onUnmounted(async () => {
 .slider-value {
   font-weight: bold;
   color: #007bff;
-  min-width: 40px;
+  min-width: 50px;
+  text-align: right;
 }
 
 .button {
@@ -1325,6 +1404,12 @@ onUnmounted(async () => {
   background: #6c757d;
 }
 
+.button.small {
+  width: auto;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+}
+
 .button.danger {
   background: #dc3545;
 }
@@ -1339,33 +1424,6 @@ onUnmounted(async () => {
   font-weight: bold;
   text-align: center;
   margin-bottom: 1rem;
-}
-
-.gamepad-status .status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border-radius: 4px;
-  font-weight: bold;
-  margin-bottom: 0.5rem;
-}
-
-.gamepad-connected .status-indicator {
-  background: #28a745;
-  color: white;
-}
-
-.gamepad-disconnected .status-indicator {
-  background: #6c757d;
-  color: white;
-}
-
-.gamepad-help {
-  font-size: 0.8rem;
-  color: #cccccc;
-  font-style: italic;
-  margin: 0;
 }
 
 .firing-status {
@@ -1416,47 +1474,11 @@ onUnmounted(async () => {
 
 .connection-required h4 {
   margin: 0 0 0.5rem 0;
-  color: #e1b394;
+  color: #888;
 }
 
 .connection-required p {
   margin: 0;
   font-size: 0.9rem;
-}
-
-/* Responsive Design */
-@media (max-width: 1024px) {
-  .main-layout {
-    flex-direction: column;
-  }
-  
-  .control-panel {
-    border-left: none;
-    border-top: 2px solid #404040;
-    min-width: unset;
-    max-width: unset;
-    max-height: 300px;
-  }
-  
-  .video-section {
-    flex: 1;
-    min-height: 400px;
-  }
-}
-
-@media (max-width: 768px) {
-  .app-header {
-    padding: 1rem;
-    flex-direction: column;
-    gap: 1rem;
-  }
-  
-  .main-layout {
-    padding: 0.5rem;
-  }
-  
-  .panel-section {
-    margin-bottom: 1.5rem;
-  }
 }
 </style>
