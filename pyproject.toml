@@ -25,9 +25,11 @@ dependencies = [
     "pygame>=2.6.1",
     "pyserial>=3.5",
     "python-dotenv>=1.0.1",
+    "pywebview>=5.4",
     "scipy>=1.13.1",
     "setuptools>=77.0.3",
     "tk>=0.1.0",
+    "ultralytics>=8.3.152",
     # "ultralytics>=8.3.94",
     "websockets>=15.0.1",
 ]
@@ -35,9 +37,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/stauntonmakerspace/WaterGun"
 
-[build-system]
-requires = ["setuptools>=77.0.3", "wheel"]
-build-backend = "setuptools.build_meta"
+# [build-system]
+# requires = ["setuptools>=77.0.3", "wheel"]
+# build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 # packages = ["watergun"]
