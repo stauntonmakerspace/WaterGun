@@ -6,16 +6,15 @@ import threading
 import base64
 import time
 import random
-from flask import Flask, render_template, Response, request, jsonify, send_from_directory
+from flask import Flask,  Response, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCDataChannel
+from aiortc import RTCPeerConnection,  MediaStreamTrack 
 from aiortc.contrib.signaling import TcpSocketSignaling
 from av import VideoFrame
 from datetime import datetime, timedelta
 import logging
 from flask_cors import CORS
 import concurrent.futures
-import weakref
 
 # YOLO tracking imports
 try:
